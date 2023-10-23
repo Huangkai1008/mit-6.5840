@@ -22,8 +22,18 @@ type ExampleReply struct {
 	Y int
 }
 
-// Add your RPC definitions here.
+type HeartBeatRequest struct{}
 
+// The HeartBeatReply is the reply that coordinator to worker.
+// It notifies the worker the jobType it should handle
+// and the filePath of input data.
+// It returns nReduce as the number of partitions.
+type HeartBeatReply struct {
+	jobType  JobType
+	filePath string
+	nReduce  int
+	taskId   int
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

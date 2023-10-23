@@ -1,11 +1,17 @@
 package mr
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/rpc"
+	"os"
+	"sync"
+)
 import "log"
-import "net/rpc"
 import "hash/fnv"
 
-// Map functions return a slice of KeyValue.
+// A KeyValue slice is the return of Map functions.
 type KeyValue struct {
 	Key   string
 	Value string
@@ -23,12 +29,72 @@ func iHash(key string) int {
 // It accepts a mapF function and a reduceF function.
 func Worker(mapF func(string, string) []KeyValue,
 	reduceF func(string, []string) string) {
+	for {
+		reply := heatBeat()
+		log.Printf("Worker: receive coordinator's heatbeat %v \n", reply)
 
-	// Your worker implementation here.
+		switch reply.jobType {
+		case MapJob:
+			executeMapTask(mapF, reply)
+		}
+	}
+}
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+// The worker heatBeat coordinator for task periodically.
+func heatBeat() *HeartBeatReply {
+	args := HeartBeatRequest{}
+	reply := HeartBeatReply{}
+	call("Coordinator.HeartBeat", &args, &reply)
+	return &reply
+}
 
+func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply) {
+	filename := reply.filePath
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v : %s", filename, err)
+	}
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v : %s", filename, err)
+	}
+
+	if err := file.Close(); err != nil {
+		log.Fatalf("cannot close %v: %s", filename, err)
+	}
+
+	kva := mapF(filename, string(content))
+
+	// Reduce invocations are distributed by partitioning the intermediate key
+	// space into R pieces using a partitioning function (e.g., hash(key) mod R)
+	intermediates := make([][]KeyValue, reply.nReduce)
+	for _, kv := range kva {
+		index := iHash(kv.Key) % reply.nReduce
+		intermediates[index] = append(intermediates[index], kv)
+	}
+
+	var wg sync.WaitGroup
+	for index, intermediate := range intermediates {
+		wg.Add(1)
+		go func(index int, intermediate []KeyValue) {
+			enc := json.NewEncoder(file)
+			for _, kv := range intermediate {
+				err := enc.Encode(&kv)
+				if err != nil {
+					log.Fatalf("cannot encode json %v: %s", kv.Key, err)
+				}
+			}
+			wg.Done()
+		}(index, intermediate)
+	}
+	wg.Wait()
+}
+
+// According to the hint of lab1, I use `mr-X-Y` as the name of intermediate files
+// where X is the Map task number, and Y is the reduce task number.
+func nameOfMapResultFile(mapTaskNumber int, reduceTaskNumber int) string {
+	return fmt.Sprintf("mr-%d-%d", mapTaskNumber, reduceTaskNumber)
 }
 
 // example function to show how to make an RPC call to the coordinator.
