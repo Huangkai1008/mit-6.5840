@@ -78,6 +78,12 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 	for index, intermediate := range intermediates {
 		wg.Add(1)
 		go func(index int, intermediate []KeyValue) {
+			filename := nameOfMapResultFile(reply.taskId, index)
+			file, err := os.Create(filename)
+			if err != nil {
+				log.Fatalf("cannot create file %v: %s", filename, err)
+			}
+
 			enc := json.NewEncoder(file)
 			for _, kv := range intermediate {
 				err := enc.Encode(&kv)
