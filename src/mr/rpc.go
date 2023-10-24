@@ -29,10 +29,17 @@ type HeartBeatRequest struct{}
 // and the filePath of input data.
 // It returns nReduce as the number of partitions.
 type HeartBeatReply struct {
-	jobType  JobType
-	filePath string
-	nReduce  int
-	taskId   int
+	jobType    JobType
+	filePath   string
+	nReduce    int
+	taskNumber int
+}
+
+type ReportRequest struct {
+	taskNumber int
+}
+
+type ReportReply struct {
 }
 
 // Cook up a unique-ish UNIX-domain socket name

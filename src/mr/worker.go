@@ -36,6 +36,8 @@ func Worker(mapF func(string, string) []KeyValue,
 		switch reply.jobType {
 		case MapJob:
 			executeMapTask(mapF, reply)
+		case ReduceJob:
+			executeReduceTask(reduceF, reply)
 		}
 	}
 }
@@ -52,16 +54,16 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 	filename := reply.filePath
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("cannot open %v : %s", filename, err)
+		log.Fatalf("Cannot open %v : %s", filename, err)
 	}
 
 	content, err := io.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v : %s", filename, err)
+		log.Fatalf("Cannot read %v : %s", filename, err)
 	}
 
 	if err := file.Close(); err != nil {
-		log.Fatalf("cannot close %v: %s", filename, err)
+		log.Fatalf("Cannot close %v: %s", filename, err)
 	}
 
 	kva := mapF(filename, string(content))
@@ -75,32 +77,71 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 	}
 
 	var wg sync.WaitGroup
+	taskNumber := reply.taskNumber
 	for index, intermediate := range intermediates {
 		wg.Add(1)
 		go func(index int, intermediate []KeyValue) {
-			filename := nameOfMapResultFile(reply.taskId, index)
+			defer wg.Done()
+			filename := nameOfMapResultFile(taskNumber, index)
 			file, err := os.Create(filename)
 			if err != nil {
-				log.Fatalf("cannot create file %v: %s", filename, err)
+				log.Fatalf("Cannot create file %v: %s", filename, err)
 			}
 
 			enc := json.NewEncoder(file)
 			for _, kv := range intermediate {
 				err := enc.Encode(&kv)
 				if err != nil {
-					log.Fatalf("cannot encode json %v: %s", kv.Key, err)
+					log.Fatalf("Cannot encode json %v: %s", kv.Key, err)
 				}
 			}
-			wg.Done()
 		}(index, intermediate)
 	}
 	wg.Wait()
+
+	// Report to coordinator after the map task finished.
+	report(taskNumber)
+}
+
+func executeReduceTask(reduceF func(string, []string) string, reply *HeartBeatReply) {
 }
 
 // According to the hint of lab1, I use `mr-X-Y` as the name of intermediate files
 // where X is the Map task number, and Y is the reduce task number.
 func nameOfMapResultFile(mapTaskNumber int, reduceTaskNumber int) string {
 	return fmt.Sprintf("mr-%d-%d", mapTaskNumber, reduceTaskNumber)
+}
+
+// The output of the X'th reduce task in the file `mr-out-X`.
+func nameOfReduceResultFile(reduceTaskNumber int) string {
+	return fmt.Sprintf("mr-out-%d", reduceTaskNumber)
+}
+
+func atomicCommitFile(filename string, content any) error {
+	tmpFile, err := os.CreateTemp(os.TempDir(), "mr-tmp-")
+	if err != nil {
+		log.Fatalf("Cannot create temporary file: %s", err)
+	}
+
+	log.Printf("Temporary file %s has created", tmpFile.Name())
+
+	defer func() {
+		_ = os.Remove(tmpFile.Name())
+	}()
+
+	defer func() {
+		_ = tmpFile.Close()
+	}()
+	return nil
+}
+
+func report(taskNumber int) {
+	args := ReportRequest{
+		taskNumber: taskNumber,
+	}
+
+	reply := ReportReply{}
+	call("Coordinator.Report", &args, &reply)
 }
 
 // example function to show how to make an RPC call to the coordinator.
