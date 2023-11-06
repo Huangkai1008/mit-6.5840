@@ -82,6 +82,7 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 		wg.Add(1)
 		go func(index int, intermediate []KeyValue) {
 			defer wg.Done()
+
 			filename := nameOfMapResultFile(taskNumber, index)
 			file, err := os.Create(filename)
 			if err != nil {
@@ -104,6 +105,7 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 }
 
 func executeReduceTask(reduceF func(string, []string) string, reply *HeartBeatReply) {
+
 }
 
 // According to the hint of lab1, I use `mr-X-Y` as the name of intermediate files

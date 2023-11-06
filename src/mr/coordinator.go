@@ -1,17 +1,92 @@
 package mr
 
-import "log"
+import (
+	"log"
+	"time"
+)
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
-type Coordinator struct {
-	// Your definitions here.
+type SchedulePhase uint8
 
+const (
+	MapPhase SchedulePhase = iota + 1
+	ReducePhase
+)
+
+type Coordinator struct {
+	files   []string
+	phase   SchedulePhase
+	tasks   []Task
+	nReduce int
+
+	heartBeatCh chan HeartBeatMessage
 }
 
-// Your code here -- RPC handlers for the worker to call.
+type HeartBeatMessage struct {
+	reply *HeartBeatReply
+	ok    chan struct{}
+}
+
+func (c *Coordinator) HeartBeat(args *HeartBeatRequest, reply *HeartBeatReply) error {
+	message := HeartBeatMessage{
+		reply: reply,
+		ok:    make(chan struct{}),
+	}
+
+	c.heartBeatCh <- message
+
+	<-message.ok
+	return nil
+}
+
+func (c *Coordinator) schedule() {
+	c.startMapPhase()
+	for {
+		select {
+		case <-c.heartBeatCh:
+		}
+	}
+}
+
+func (c *Coordinator) startMapPhase() {
+	c.phase = MapPhase
+	c.tasks = make([]Task, len(c.files))
+	for index, filePath := range c.files {
+		c.tasks[index] = Task{
+			filePath: filePath,
+			state:    Idle,
+		}
+	}
+}
+
+func (c *Coordinator) resignTask(reply *HeartBeatReply) {
+	for id, task := range c.tasks {
+		switch task.state {
+		case Idle:
+			task.state = InProgress
+			task.startTime = time.Now()
+
+			reply.taskNumber = id
+			reply.nReduce = c.nReduce
+
+			if c.phase == MapPhase {
+				reply.jobType = MapJob
+				reply.filePath = task.filePath
+			} else {
+				reply.jobType = ReduceJob
+			}
+
+		case InProgress:
+
+		case Completed:
+
+		}
+	}
+
+}
 
 // an example RPC handler.
 //
@@ -52,8 +127,6 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
-
-	// Your code here.
 
 	c.server()
 	return &c

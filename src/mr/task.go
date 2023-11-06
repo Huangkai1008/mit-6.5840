@@ -1,6 +1,7 @@
 package mr
 
-// JobType represents the
+import "time"
+
 type JobType uint8
 
 const (
@@ -16,6 +17,10 @@ const (
 	Completed
 )
 
+// Task accept the filePath as input,
+// there are different TaskState in different working stages.
 type Task struct {
-	state TaskState
+	filePath  string
+	state     TaskState
+	startTime time.Time
 }
