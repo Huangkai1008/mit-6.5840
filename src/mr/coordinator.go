@@ -16,6 +16,8 @@ const (
 	ReducePhase
 )
 
+const MaxTaskRunInterval = 10 * time.Second
+
 type Coordinator struct {
 	files   []string
 	phase   SchedulePhase
@@ -62,7 +64,7 @@ func (c *Coordinator) startMapPhase() {
 	}
 }
 
-func (c *Coordinator) resignTask(reply *HeartBeatReply) {
+func (c *Coordinator) AssignTask(reply *HeartBeatReply) {
 	for id, task := range c.tasks {
 		switch task.state {
 		case Idle:
@@ -80,6 +82,9 @@ func (c *Coordinator) resignTask(reply *HeartBeatReply) {
 			}
 
 		case InProgress:
+			if time.Now().Sub(task.startTime) > MaxTaskRunInterval {
+				task.startTime
+			}
 
 		case Completed:
 
