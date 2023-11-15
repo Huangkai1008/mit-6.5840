@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,22 +81,25 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 	taskNumber := reply.taskNumber
 	for index, intermediate := range intermediates {
 		wg.Add(1)
+
 		go func(index int, intermediate []KeyValue) {
 			defer wg.Done()
 
-			filename := nameOfMapResultFile(taskNumber, index)
-			file, err := os.Create(filename)
-			if err != nil {
-				log.Fatalf("Cannot create file %v: %s", filename, err)
-			}
+			fileName := nameOfMapResultFile(taskNumber, index)
 
-			enc := json.NewEncoder(file)
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
 			for _, kv := range intermediate {
 				err := enc.Encode(&kv)
 				if err != nil {
 					log.Fatalf("Cannot encode json %v: %s", kv.Key, err)
 				}
 			}
+
+			if err := atomicCommitFile(fileName, &buf); err != nil {
+				log.Fatalf("Cannot commit map result file %s: %s", fileName, err)
+			}
+
 		}(index, intermediate)
 	}
 	wg.Wait()
@@ -119,13 +123,15 @@ func nameOfReduceResultFile(reduceTaskNumber int) string {
 	return fmt.Sprintf("mr-out-%d", reduceTaskNumber)
 }
 
-func atomicCommitFile(filename string, content any) error {
+func atomicCommitFile(filename string, r io.Reader) (err error) {
 	tmpFile, err := os.CreateTemp(os.TempDir(), "mr-tmp-")
 	if err != nil {
-		log.Fatalf("Cannot create temporary file: %s", err)
+		log.Fatalf("cannot create temporary file: %s", err)
 	}
 
-	log.Printf("Temporary file %s has created", tmpFile.Name())
+	tmpFileName := tmpFile.Name()
+
+	log.Printf("temporary file %s has created", tmpFileName)
 
 	defer func() {
 		_ = os.Remove(tmpFile.Name())
@@ -134,6 +140,16 @@ func atomicCommitFile(filename string, content any) error {
 	defer func() {
 		_ = tmpFile.Close()
 	}()
+
+	// Write data to temporary file.
+	if _, err := io.Copy(tmpFile, r); err != nil {
+		return fmt.Errorf("cannot write data to temporary file: %s", err)
+	}
+
+	if err := os.Rename(tmpFileName, filename); err != nil {
+		return fmt.Errorf("cannot rename temporary file: %s to %s: %s", tmpFileName, filename, err)
+	}
+
 	return nil
 }
 

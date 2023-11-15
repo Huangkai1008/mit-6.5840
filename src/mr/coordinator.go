@@ -19,11 +19,10 @@ const (
 const MaxTaskRunInterval = 10 * time.Second
 
 type Coordinator struct {
-	files   []string
-	phase   SchedulePhase
-	tasks   []Task
-	nReduce int
-
+	files       []string
+	phase       SchedulePhase
+	tasks       []Task
+	nReduce     int
 	heartBeatCh chan HeartBeatMessage
 }
 
