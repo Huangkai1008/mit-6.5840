@@ -64,7 +64,7 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 	}
 
 	if err := file.Close(); err != nil {
-		log.Fatalf("Cannot close %v: %s", filename, err)
+		log.Fatalf("Cannot close %v : %s", filename, err)
 	}
 
 	kva := mapF(filename, string(content))
@@ -109,7 +109,37 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 }
 
 func executeReduceTask(reduceF func(string, []string) string, reply *HeartBeatReply) {
+	var wg sync.WaitGroup
+	var kva []KeyValue
+	for index := 0; index < reply.nMap; index++ {
+		wg.Add(1)
 
+		go func(index int) {
+			defer wg.Done()
+
+			fileName := nameOfMapResultFile(index, reply.taskNumber)
+			file, err := os.Open(fileName)
+			if err != nil {
+				log.Fatalf("Cannot open %s : %s", fileName, err)
+			}
+
+			defer func() {
+				if err := file.Close(); err != nil {
+					log.Fatalf("Cannot close %s : %s", fileName, err)
+				}
+			}()
+
+			dec := json.NewDecoder(file)
+			for {
+				var kv KeyValue
+				if err := dec.Decode(&kv); err != nil {
+					break
+				}
+				kva = append(kva, kv)
+			}
+
+		}(index)
+	}
 }
 
 // According to the hint of lab1, I use `mr-X-Y` as the name of intermediate files
