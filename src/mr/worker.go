@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/rpc"
 	"os"
+	"sort"
 	"sync"
 )
 import "log"
@@ -17,6 +18,12 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // use iHash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -109,37 +116,49 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 }
 
 func executeReduceTask(reduceF func(string, []string) string, reply *HeartBeatReply) {
-	var wg sync.WaitGroup
-	var kva []KeyValue
+	var intermediate []KeyValue
+	taskNumber := reply.taskNumber
 	for index := 0; index < reply.nMap; index++ {
-		wg.Add(1)
-
-		go func(index int) {
-			defer wg.Done()
-
-			fileName := nameOfMapResultFile(index, reply.taskNumber)
-			file, err := os.Open(fileName)
-			if err != nil {
-				log.Fatalf("Cannot open %s : %s", fileName, err)
+		fileName := nameOfMapResultFile(index, taskNumber)
+		file := readIntermediateFile(fileName)
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
 			}
-
-			defer func() {
-				if err := file.Close(); err != nil {
-					log.Fatalf("Cannot close %s : %s", fileName, err)
-				}
-			}()
-
-			dec := json.NewDecoder(file)
-			for {
-				var kv KeyValue
-				if err := dec.Decode(&kv); err != nil {
-					break
-				}
-				kva = append(kva, kv)
-			}
-
-		}(index)
+			intermediate = append(intermediate, kv)
+		}
 	}
+
+	sort.Sort(ByKey(intermediate))
+	var buf bytes.Buffer
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		var values []string
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+
+		output := reduceF(intermediate[i].Key, values)
+
+		_, err := fmt.Fprintf(&buf, "%v %v\n", intermediate[i].Key, output)
+		if err != nil {
+			log.Fatalf("Cannot write reduce result to buffer : %s.", err)
+		}
+		i = j
+	}
+
+	fileName := nameOfReduceResultFile(taskNumber)
+	if err := atomicCommitFile(fileName, &buf); err != nil {
+		log.Fatalf("Cannot commit reduce result file %s: %s", fileName, err)
+	}
+
+	report(taskNumber)
 }
 
 // According to the hint of lab1, I use `mr-X-Y` as the name of intermediate files
@@ -151,6 +170,21 @@ func nameOfMapResultFile(mapTaskNumber int, reduceTaskNumber int) string {
 // The output of the X'th reduce task in the file `mr-out-X`.
 func nameOfReduceResultFile(reduceTaskNumber int) string {
 	return fmt.Sprintf("mr-out-%d", reduceTaskNumber)
+}
+
+func readIntermediateFile(fileName string) *os.File {
+	file, err := os.Open(fileName)
+	if err != nil {
+		log.Fatalf("Cannot open %s : %s", fileName, err)
+	}
+
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Fatalf("Cannot close %s : %s", fileName, err)
+		}
+	}()
+
+	return file
 }
 
 func atomicCommitFile(filename string, r io.Reader) (err error) {

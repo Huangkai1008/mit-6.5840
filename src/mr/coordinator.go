@@ -82,7 +82,7 @@ func (c *Coordinator) AssignTask(reply *HeartBeatReply) {
 
 		case InProgress:
 			if time.Now().Sub(task.startTime) > MaxTaskRunInterval {
-				task.startTime
+				task.startTime = time.Now()
 			}
 
 		case Completed:
