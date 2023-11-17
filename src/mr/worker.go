@@ -9,9 +9,12 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"time"
 )
 import "log"
 import "hash/fnv"
+
+const WaitInterval = 1 * time.Second
 
 // A KeyValue slice is the return of Map functions.
 type KeyValue struct {
@@ -34,7 +37,10 @@ func iHash(key string) int {
 }
 
 // Worker function called by main/mrworker.go.
+//
 // It accepts a mapF function and a reduceF function.
+// When the worker starts, it periodically sends RPC requests to the coordinator
+// and does different work based on the replies.
 func Worker(mapF func(string, string) []KeyValue,
 	reduceF func(string, []string) string) {
 	for {
@@ -46,6 +52,11 @@ func Worker(mapF func(string, string) []KeyValue,
 			executeMapTask(mapF, reply)
 		case ReduceJob:
 			executeReduceTask(reduceF, reply)
+		case WaitJob:
+			time.Sleep(WaitInterval)
+		case ExitJob:
+			log.Printf("Worker: receive coordinator's exit signal, Bye !")
+			return
 		}
 	}
 }
@@ -113,12 +124,14 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 
 	// Report to coordinator after the map task finished.
 	report(taskNumber)
+
+	log.Printf("Mapper has finished task: %d", taskNumber)
 }
 
 func executeReduceTask(reduceF func(string, []string) string, reply *HeartBeatReply) {
 	var intermediate []KeyValue
 	taskNumber := reply.taskNumber
-	for index := 0; index < reply.nMap; index++ {
+	for index := 0; index < reply.nFiles; index++ {
 		fileName := nameOfMapResultFile(index, taskNumber)
 		file := readIntermediateFile(fileName)
 		dec := json.NewDecoder(file)
@@ -159,6 +172,8 @@ func executeReduceTask(reduceF func(string, []string) string, reply *HeartBeatRe
 	}
 
 	report(taskNumber)
+
+	log.Printf("Reducer has finished task: %d", taskNumber)
 }
 
 // According to the hint of lab1, I use `mr-X-Y` as the name of intermediate files

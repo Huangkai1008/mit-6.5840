@@ -7,6 +7,8 @@ type JobType uint8
 const (
 	MapJob JobType = iota + 1
 	ReduceJob
+	WaitJob
+	ExitJob
 )
 
 type TaskState uint8

@@ -31,7 +31,7 @@ type HeartBeatRequest struct{}
 type HeartBeatReply struct {
 	jobType    JobType
 	filePath   string
-	nMap       int
+	nFiles     int
 	nReduce    int
 	taskNumber int
 }

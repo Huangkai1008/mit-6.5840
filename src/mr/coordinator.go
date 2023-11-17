@@ -14,6 +14,7 @@ type SchedulePhase uint8
 const (
 	MapPhase SchedulePhase = iota + 1
 	ReducePhase
+	FinishedPhase
 )
 
 const MaxTaskRunInterval = 10 * time.Second
@@ -45,9 +46,16 @@ func (c *Coordinator) HeartBeat(args *HeartBeatRequest, reply *HeartBeatReply) e
 
 func (c *Coordinator) schedule() {
 	c.startMapPhase()
+
 	for {
 		select {
-		case <-c.heartBeatCh:
+		case message := <-c.heartBeatCh:
+			switch c.phase {
+			case MapPhase:
+				
+			case FinishedPhase:
+				message.reply.jobType = ExitJob
+			}
 		}
 	}
 }
@@ -63,7 +71,7 @@ func (c *Coordinator) startMapPhase() {
 	}
 }
 
-func (c *Coordinator) AssignTask(reply *HeartBeatReply) {
+func (c *Coordinator) assignTask(reply *HeartBeatReply) {
 	for id, task := range c.tasks {
 		switch task.state {
 		case Idle:
