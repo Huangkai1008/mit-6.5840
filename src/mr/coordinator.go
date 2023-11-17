@@ -2,6 +2,7 @@ package mr
 
 import (
 	"log"
+	"sync"
 	"time"
 )
 import "net"
@@ -17,13 +18,19 @@ const (
 	FinishedPhase
 )
 
+const TimeoutCheckInterval = 5 * time.Second
 const MaxTaskRunInterval = 10 * time.Second
 
 type Coordinator struct {
-	files       []string
-	phase       SchedulePhase
-	tasks       []Task
-	nReduce     int
+	mu sync.Mutex
+
+	files   []string
+	nReduce int
+
+	phase     SchedulePhase
+	taskQueue chan *Task
+	taskMeta  map[int]*Task
+
 	heartBeatCh chan HeartBeatMessage
 }
 
@@ -44,6 +51,38 @@ func (c *Coordinator) HeartBeat(args *HeartBeatRequest, reply *HeartBeatReply) e
 	return nil
 }
 
+// MakeCoordinator returns a new coordinator.
+//
+// main/mrcoordinator.go calls this function.
+// nReduce is the number of reduce tasks to use.
+func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	c := Coordinator{
+		files:     files,
+		nReduce:   nReduce,
+		phase:     MapPhase,
+		taskQueue: make(chan *Task, max(len(files), nReduce)),
+	}
+
+	c.startMapPhase()
+
+	c.server()
+
+	go c.schedule()
+	return &c
+}
+
+func (c *Coordinator) startMapPhase() {
+	for index, filePath := range c.files {
+		task := &Task{
+			filePath: filePath,
+			state:    Idle,
+		}
+
+		c.taskQueue <- task
+		c.taskMeta[index] = task
+	}
+}
+
 func (c *Coordinator) schedule() {
 	c.startMapPhase()
 
@@ -52,7 +91,7 @@ func (c *Coordinator) schedule() {
 		case message := <-c.heartBeatCh:
 			switch c.phase {
 			case MapPhase:
-				
+
 			case FinishedPhase:
 				message.reply.jobType = ExitJob
 			}
@@ -60,18 +99,30 @@ func (c *Coordinator) schedule() {
 	}
 }
 
-func (c *Coordinator) startMapPhase() {
-	c.phase = MapPhase
-	c.tasks = make([]Task, len(c.files))
-	for index, filePath := range c.files {
-		c.tasks[index] = Task{
-			filePath: filePath,
-			state:    Idle,
+func (c *Coordinator) startTimer() {
+	ticker := time.NewTicker(TimeoutCheckInterval)
+	for {
+		select {
+		case <-ticker.C:
+			c.mu.Lock()
+			if c.phase == FinishedPhase {
+				c.mu.Unlock()
+				return
+			}
+
+			for _, task := range c.taskMeta {
+				if task.state == InProgress && time.Now().Sub(task.startTime) > MaxTaskRunInterval {
+					task.state = Idle
+					c.taskQueue <- task
+				}
+			}
+			c.mu.Unlock()
 		}
 	}
 }
 
 func (c *Coordinator) assignTask(reply *HeartBeatReply) {
+
 	for id, task := range c.tasks {
 		switch task.state {
 		case Idle:
@@ -124,6 +175,13 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
@@ -132,14 +190,4 @@ func (c *Coordinator) Done() bool {
 	// Your code here.
 
 	return ret
-}
-
-// create a Coordinator.
-// main/mrcoordinator.go calls this function.
-// nReduce is the number of reduce tasks to use.
-func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
-
-	c.server()
-	return &c
 }
