@@ -6,12 +6,15 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 import "strconv"
 
 //
 // example to show how to declare the arguments
-// and reply for an RPC.
+// and request for an RPC.
 //
 
 type ExampleArgs struct {
@@ -24,20 +27,24 @@ type ExampleReply struct {
 
 type HeartBeatRequest struct{}
 
-// The HeartBeatReply is the reply that coordinator to worker.
-// It notifies the worker the jobType it should handle
-// and the filePath of input data.
-// It returns nReduce as the number of partitions.
+// The HeartBeatReply is the request that coordinator to worker.
+// It notifies the worker the JobType it should handle
+// and the FilePath of input data.
+// It returns NReduce as the number of partitions.
 type HeartBeatReply struct {
-	jobType    JobType
-	filePath   string
-	nFiles     int
-	nReduce    int
-	taskNumber int
+	JobType    JobType
+	FilePath   string
+	NFiles     int
+	NReduce    int
+	TaskNumber int
+}
+
+func (h *HeartBeatReply) String() string {
+	return fmt.Sprintf("Reply(JobType = %v, TaskNumber = %d)", h.JobType, h.TaskNumber)
 }
 
 type ReportRequest struct {
-	taskNumber int
+	TaskNumber int
 }
 
 type ReportReply struct {

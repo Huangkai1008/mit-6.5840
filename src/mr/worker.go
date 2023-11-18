@@ -43,11 +43,13 @@ func iHash(key string) int {
 // and does different work based on the replies.
 func Worker(mapF func(string, string) []KeyValue,
 	reduceF func(string, []string) string) {
+	log.Printf("Worker has been started.")
 	for {
+		log.Println("Worker: send heart beat to coordinator.")
 		reply := heatBeat()
 		log.Printf("Worker: receive coordinator's heatbeat %v \n", reply)
 
-		switch reply.jobType {
+		switch reply.JobType {
 		case MapJob:
 			executeMapTask(mapF, reply)
 		case ReduceJob:
@@ -57,6 +59,8 @@ func Worker(mapF func(string, string) []KeyValue,
 		case ExitJob:
 			log.Printf("Worker: receive coordinator's exit signal, Bye !")
 			return
+		default:
+			panic(fmt.Sprintf("Unexpected job type: %d", reply.JobType))
 		}
 	}
 }
@@ -70,7 +74,7 @@ func heatBeat() *HeartBeatReply {
 }
 
 func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply) {
-	filename := reply.filePath
+	filename := reply.FilePath
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("Cannot open %v : %s", filename, err)
@@ -89,14 +93,14 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 
 	// Reduce invocations are distributed by partitioning the intermediate key
 	// space into R pieces using a partitioning function (e.g., hash(key) mod R)
-	intermediates := make([][]KeyValue, reply.nReduce)
+	intermediates := make([][]KeyValue, reply.NReduce)
 	for _, kv := range kva {
-		index := iHash(kv.Key) % reply.nReduce
+		index := iHash(kv.Key) % reply.NReduce
 		intermediates[index] = append(intermediates[index], kv)
 	}
 
 	var wg sync.WaitGroup
-	taskNumber := reply.taskNumber
+	taskNumber := reply.TaskNumber
 	for index, intermediate := range intermediates {
 		wg.Add(1)
 
@@ -130,10 +134,13 @@ func executeMapTask(mapF func(string, string) []KeyValue, reply *HeartBeatReply)
 
 func executeReduceTask(reduceF func(string, []string) string, reply *HeartBeatReply) {
 	var intermediate []KeyValue
-	taskNumber := reply.taskNumber
-	for index := 0; index < reply.nFiles; index++ {
+	taskNumber := reply.TaskNumber
+	for index := 0; index < reply.NFiles; index++ {
 		fileName := nameOfMapResultFile(index, taskNumber)
-		file := readIntermediateFile(fileName)
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatalf("Cannot open %s : %s", fileName, err)
+		}
 		dec := json.NewDecoder(file)
 		for {
 			var kv KeyValue
@@ -141,6 +148,9 @@ func executeReduceTask(reduceF func(string, []string) string, reply *HeartBeatRe
 				break
 			}
 			intermediate = append(intermediate, kv)
+		}
+		if err := file.Close(); err != nil {
+			log.Fatalf("Cannot close %s : %s", fileName, err)
 		}
 	}
 
@@ -187,21 +197,6 @@ func nameOfReduceResultFile(reduceTaskNumber int) string {
 	return fmt.Sprintf("mr-out-%d", reduceTaskNumber)
 }
 
-func readIntermediateFile(fileName string) *os.File {
-	file, err := os.Open(fileName)
-	if err != nil {
-		log.Fatalf("Cannot open %s : %s", fileName, err)
-	}
-
-	defer func() {
-		if err := file.Close(); err != nil {
-			log.Fatalf("Cannot close %s : %s", fileName, err)
-		}
-	}()
-
-	return file
-}
-
 func atomicCommitFile(filename string, r io.Reader) (err error) {
 	tmpFile, err := os.CreateTemp(os.TempDir(), "mr-tmp-")
 	if err != nil {
@@ -234,7 +229,7 @@ func atomicCommitFile(filename string, r io.Reader) (err error) {
 
 func report(taskNumber int) {
 	args := ReportRequest{
-		taskNumber: taskNumber,
+		TaskNumber: taskNumber,
 	}
 
 	reply := ReportReply{}
@@ -243,7 +238,7 @@ func report(taskNumber int) {
 
 // example function to show how to make an RPC call to the coordinator.
 //
-// the RPC argument and reply types are defined in rpc.go.
+// the RPC argument and request types are defined in rpc.go.
 func CallExample() {
 
 	// declare an argument structure.
@@ -252,17 +247,17 @@ func CallExample() {
 	// fill in the argument(s).
 	args.X = 99
 
-	// declare a reply structure.
+	// declare a request structure.
 	reply := ExampleReply{}
 
-	// send the RPC request, wait for the reply.
+	// send the RPC request, wait for the request.
 	// the "Coordinator.Example" tells the
 	// receiving server that we'd like to call
 	// the Example() method of struct Coordinator.
 	ok := call("Coordinator.Example", &args, &reply)
 	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
+		// request.Y should be 100.
+		fmt.Printf("request.Y %v\n", reply.Y)
 	} else {
 		fmt.Printf("call failed!\n")
 	}

@@ -19,10 +19,11 @@ const (
 	Completed
 )
 
-// Task accept the filePath as input,
+// Task accept the FilePath as input,
 // there are different TaskState in different working stages.
 type Task struct {
-	filePath  string
-	state     TaskState
-	startTime time.Time
+	taskNumber int
+	filePath   string
+	state      TaskState
+	startTime  time.Time
 }
