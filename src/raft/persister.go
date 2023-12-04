@@ -13,7 +13,7 @@ import "sync"
 
 type Persister struct {
 	mu        sync.Mutex
-	raftstate []byte
+	raftState []byte
 	snapshot  []byte
 }
 
@@ -31,7 +31,7 @@ func (ps *Persister) Copy() *Persister {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	np := MakePersister()
-	np.raftstate = ps.raftstate
+	np.raftState = ps.raftState
 	np.snapshot = ps.snapshot
 	return np
 }
@@ -39,13 +39,13 @@ func (ps *Persister) Copy() *Persister {
 func (ps *Persister) ReadRaftState() []byte {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	return clone(ps.raftstate)
+	return clone(ps.raftState)
 }
 
 func (ps *Persister) RaftStateSize() int {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	return len(ps.raftstate)
+	return len(ps.raftState)
 }
 
 // Save both Raft state and K/V snapshot as a single atomic action,
@@ -53,7 +53,7 @@ func (ps *Persister) RaftStateSize() int {
 func (ps *Persister) Save(raftstate []byte, snapshot []byte) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	ps.raftstate = clone(raftstate)
+	ps.raftState = clone(raftstate)
 	ps.snapshot = clone(snapshot)
 }
 
