@@ -49,6 +49,12 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+// Term acts as a logical clock in Raft.
+//
+// Term is numbered with consecutive integers.
+// Each Term begins with an election.
+type Term uint
+
 // Raft is a Go object implementing a single Raft peer.
 //
 // According to the paper's Figure 2, a Raft server must maintain three types of states:
@@ -67,9 +73,9 @@ type Raft struct {
 
 	// currentTerm is the last term server has seen.
 	//
-	// It initialized to 0 on first boot,
+	// It initialized to 0 on the first boot,
 	// increases monotonically.
-	currentTerm uint
+	currentTerm Term
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -87,7 +93,7 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isLeader
 }
 
-// save Raft's persistent state to stable storage,
+// save the Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 // before you've implemented snapshots, you should pass nil as the
@@ -134,21 +140,48 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
+// RequestVoteArgs is the `RequestVote` RPC arguments structure.
+//
+// Notes: field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+
+	// term is the candidate's term.
+	term Term
+
+	// candidateId is a candidate requesting vote,
+	// which is the server id in this lab.
+	candidateId int
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
+// RequestVoteReply is the `RequestVote` RPC reply structure.
+//
+// Notes: field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
+
+	// term is the currentTerm, for a candidate to update itself.
+	term Term
+
+	// voteGranted is the result of the vote.
+	// true means the candidate received the vote,
+	// false means follower rejected the vote.
+	voteGranted bool
 }
 
-// example RequestVote RPC handler.
+// RequestVote RPC handler,
+//
+// which is invoked by candidates to gather votes.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
+	// if the candidate's term is smaller than the current term,
+	// reject the vote and return the current term.
+	if args.term < rf.currentTerm {
+		reply.term = rf.currentTerm
+		reply.voteGranted = false
+		return
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
