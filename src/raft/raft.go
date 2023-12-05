@@ -49,11 +49,20 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+// State is the raft state.
+type State uint8
+
+const (
+	Follower State = iota + 1
+	Candidate
+	Leader
+)
+
 // Term acts as a logical clock in Raft.
 //
 // Term is numbered with consecutive integers.
 // Each Term begins with an election.
-type Term uint
+type Term = int
 
 // Raft is a Go object implementing a single Raft peer.
 //
@@ -71,11 +80,17 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
+	state State
+
 	// currentTerm is the last term server has seen.
 	//
 	// It initialized to 0 on the first boot,
 	// increases monotonically.
 	currentTerm Term
+	// voteFor returns the candidateId that received vote
+	// in the current term (or null if none)
+	// At the beginning, the field is null.
+	voteFor int
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -86,11 +101,14 @@ type Raft struct {
 // GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	var term int
-	var isLeader bool
-	// Your code here (2A).
-	return term, isLeader
+	return rf.currentTerm, rf.isLeader()
+}
+
+func (rf *Raft) isLeader() bool {
+	return rf.state == Leader
 }
 
 // save the Raft's persistent state to stable storage,
@@ -140,10 +158,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// RequestVoteArgs is the `RequestVote` RPC arguments structure.
+// RequestVoteRequest is the `RequestVote` RPC arguments structure.
 //
 // Notes: field names must start with capital letters!
-type RequestVoteArgs struct {
+type RequestVoteRequest struct {
 	// Your data here (2A, 2B).
 
 	// term is the candidate's term.
@@ -172,16 +190,29 @@ type RequestVoteReply struct {
 // RequestVote RPC handler,
 //
 // which is invoked by candidates to gather votes.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 
-	// if the candidate's term is smaller than the current term,
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// If the candidate's term is smaller than the current term,
 	// reject the vote and return the current term.
-	if args.term < rf.currentTerm {
+	if request.term < rf.currentTerm {
 		reply.term = rf.currentTerm
 		reply.voteGranted = false
 		return
 	}
+
+	// If RPC request or response contains term T > currentTerm:
+	// set currentTerm = T, convert to follower.
+	if request.term > rf.currentTerm {
+		rf.currentTerm = request.term
+		rf.state = Follower
+	}
+
+	rf.voteFor = request.candidateId
+	reply.voteGranted = true
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -211,7 +242,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteRequest, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -283,14 +314,17 @@ func (rf *Raft) ticker() {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
+	rf := &Raft{
+		peers:     peers,
+		persister: persister,
+		me:        me,
+
+		state: Follower,
+
+		currentTerm: 0,
+	}
 
 	// Your initialization code here (2A, 2B, 2C).
-
-	rf.currentTerm = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
