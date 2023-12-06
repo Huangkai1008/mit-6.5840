@@ -220,20 +220,20 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// RequestVote RPC handler,
-//
-// which is invoked by candidates to gather votes.
-func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
+func (rf *Raft) sendAppendEntries(server int, request *AppendEntriesRequest, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", request, reply)
+	return ok
+}
 
+// AppendEntries RPC handler
+//
+// Which is invoked by leader to replicate log entries (§5.3); also used as heartbeat (§5.2).
+func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// If the candidate's Term is smaller than the current Term,
-	// reject the vote and return the current Term.
-	if request.Term < rf.currentTerm {
+	if request.Term <= rf.currentTerm {
 		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
 		return
 	}
 
@@ -243,9 +243,6 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 		rf.currentTerm = request.Term
 		rf.convertTo(Follower)
 	}
-
-	rf.voteFor = request.CandidateId
-	reply.VoteGranted = true
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -275,9 +272,37 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteRequest, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+func (rf *Raft) sendRequestVote(server int, request *RequestVoteRequest, reply *RequestVoteReply) bool {
+	ok := rf.peers[server].Call("Raft.RequestVote", request, reply)
 	return ok
+}
+
+// RequestVote RPC handler,
+//
+// which is invoked by candidates to gather votes.
+func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply) {
+	// Your code here (2A, 2B).
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// If the candidate's Term is smaller than the current Term,
+	// reject the vote and return the current Term.
+	if request.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	// If RPC request or response contains Term T > currentTerm:
+	// set currentTerm = T, convert to follower.
+	if request.Term > rf.currentTerm {
+		rf.currentTerm = request.Term
+		rf.convertTo(Follower)
+	}
+
+	rf.voteFor = request.CandidateId
+	reply.VoteGranted = true
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -324,6 +349,24 @@ func (rf *Raft) killed() bool {
 // broadcastHeartBeat send initial empty AppendEntries RPCs (heartbeat) to each server.
 // repeat during idle periods to prevent election timeouts
 func (rf *Raft) broadcastHeartBeat() {
+	request := &AppendEntriesRequest{
+		Term:     rf.currentTerm,
+		LeaderId: rf.me,
+	}
+
+	for peer := range rf.peers {
+		if rf.isMe(peer) {
+			continue
+		}
+
+		go func(peer int) {
+			reply := new(AppendEntriesReply)
+			if rf.sendAppendEntries(peer, request, reply) {
+
+			}
+
+		}(peer)
+	}
 }
 
 // startElection invoked when election timeout elapses
