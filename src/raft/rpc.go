@@ -46,6 +46,10 @@ type AppendEntriesRequest struct {
 	LeaderId int
 }
 
+func (r *AppendEntriesRequest) String() string {
+	return fmt.Sprintf("Request(Term = %d, LeaderId = %d)", r.Term, r.LeaderId)
+}
+
 // AppendEntriesReply is the `AppendEntries` RPC reply structure.
 type AppendEntriesReply struct {
 	// Term, for leader to update itself.
@@ -53,4 +57,8 @@ type AppendEntriesReply struct {
 	// Success means whether follower contained entry
 	// matching prevLogIndex and prevLogTerm.
 	Success bool
+}
+
+func (r *AppendEntriesReply) String() string {
+	return fmt.Sprintf("Reply(Term = %d, Success = %v)", r.Term, r.Success)
 }
