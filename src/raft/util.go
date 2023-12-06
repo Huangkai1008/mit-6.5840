@@ -1,11 +1,12 @@
 package raft
 
-import "log"
+import (
+	"log"
+)
 
-// Debugging
-const Debug = false
+const Debug = true
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
+func DPrintf(format string, a ...interface{}) {
 	if Debug {
 		log.Printf(format, a...)
 	}
