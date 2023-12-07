@@ -232,17 +232,29 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if request.Term <= rf.currentTerm {
+	// If a server receives a request with a stale term number,
+	// it rejects the request.
+	if request.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
+		reply.Success = false
 		return
 	}
 
 	// If RPC request or response contains Term T > currentTerm:
 	// set currentTerm = T, convert to follower.
+	//
+	// If the leader’s term (included in its RPC) is at least
+	// as large as the candidate’s current term,
+	// then the candidate recognizes the leader as legitimate and
+	// returns to follower state
 	if request.Term > rf.currentTerm {
 		rf.currentTerm = request.Term
 		rf.convertTo(Follower)
 	}
+
+	reply.Term = rf.currentTerm
+	reply.Success = true
+	rf.electionTimer.Reset(electionTimeout())
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -296,12 +308,10 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 
 	// If RPC request or response contains Term T > currentTerm:
 	// set currentTerm = T, convert to follower.
-	if request.Term > rf.currentTerm {
-		rf.currentTerm = request.Term
-		rf.convertTo(Follower)
-	}
-
+	rf.currentTerm = request.Term
+	rf.convertTo(Follower)
 	rf.voteFor = request.CandidateId
+	rf.electionTimer.Reset(electionTimeout())
 	reply.VoteGranted = true
 }
 
@@ -362,7 +372,18 @@ func (rf *Raft) broadcastHeartBeat() {
 		go func(peer int) {
 			reply := new(AppendEntriesReply)
 			if rf.sendAppendEntries(peer, request, reply) {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
 
+				DPrintf(
+					"{Node %v} receives reply %v from {Node %v} after sending `AppendEntries` RPC request %v in term %d",
+					rf.me, reply, request, rf.currentTerm,
+				)
+
+				if rf.currentTerm < reply.Term {
+					rf.currentTerm = reply.Term
+					rf.convertTo(Follower)
+				}
 			}
 
 		}(peer)
@@ -431,6 +452,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			if rf.isLeader() {
 				rf.broadcastHeartBeat()
+				rf.heartBeatTimer.Reset(heartBeatInterval())
 			}
 			rf.mu.Unlock()
 		case <-rf.electionTimer.C:
