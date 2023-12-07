@@ -377,7 +377,7 @@ func (rf *Raft) broadcastHeartBeat() {
 
 				DPrintf(
 					"{Node %v} receives reply %v from {Node %v} after sending `AppendEntries` RPC request %v in term %d",
-					rf.me, reply, request, rf.currentTerm,
+					rf.me, reply, peer, request, rf.currentTerm,
 				)
 
 				if rf.currentTerm < reply.Term {
@@ -423,7 +423,7 @@ func (rf *Raft) startElection() {
 
 				DPrintf(
 					"{Node %v} receives reply %v from {Node %v} after sending `RequestVote` RPC request %v in term %d",
-					rf.me, reply, request, rf.currentTerm,
+					rf.me, reply, peer, request, rf.currentTerm,
 				)
 
 				if reply.VoteGranted {
