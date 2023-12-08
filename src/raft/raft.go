@@ -255,6 +255,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	rf.electionTimer.Reset(electionTimeout())
+	Debug(dTimer, "S%d received S%d heartbeat in T%d", rf.me, request.LeaderId, rf.currentTerm)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -313,6 +314,7 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 	rf.voteFor = request.CandidateId
 	rf.electionTimer.Reset(electionTimeout())
 	reply.VoteGranted = true
+	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, rf.voteFor, rf.currentTerm)
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -359,6 +361,8 @@ func (rf *Raft) killed() bool {
 // broadcastHeartBeat send initial empty AppendEntries RPCs (heartbeat) to each server.
 // repeat during idle periods to prevent election timeouts
 func (rf *Raft) broadcastHeartBeat() {
+	Debug(dTimer, "S%d Leader, checking heartbeats.")
+
 	request := &AppendEntriesRequest{
 		Term:     rf.currentTerm,
 		LeaderId: rf.me,
@@ -375,10 +379,10 @@ func (rf *Raft) broadcastHeartBeat() {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				DPrintf(
-					"{Node %v} receives reply %v from {Node %v} after sending `AppendEntries` RPC request %v in term %d",
-					rf.me, reply, peer, request, rf.currentTerm,
-				)
+				//DPrintf(
+				//	"{Node %v} receives reply %v from {Node %v} after sending `AppendEntries` RPC request %v in term %d",
+				//	rf.me, reply, peer, request, rf.currentTerm,
+				//)
 
 				if rf.currentTerm < reply.Term {
 					rf.currentTerm = reply.Term
@@ -421,15 +425,20 @@ func (rf *Raft) startElection() {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				DPrintf(
-					"{Node %v} receives reply %v from {Node %v} after sending `RequestVote` RPC request %v in term %d",
-					rf.me, reply, peer, request, rf.currentTerm,
-				)
+				//DPrintf(
+				//	"{Node %v} receives reply %v from {Node %v} after sending `RequestVote` RPC request %v in term %d",
+				//	rf.me, reply, peer, request, rf.currentTerm,
+				//)
 
 				if reply.VoteGranted {
+					Debug(dVote, "S%d <- S%d Got vote", rf.me, peer)
+
 					grantVotes++
 					if winMajority(grantVotes, len(rf.peers)) {
-						DPrintf("{Node %v} has won the election in term %d", rf.me, rf.currentTerm)
+						Debug(
+							dLeader, "S%d Achieved Majority for T%d (%d/%d), converting to Leader",
+							rf.me, rf.currentTerm, grantVotes, len(rf.peers),
+						)
 						// Once a candidate wins an election, it becomes leader.
 						// It then sends heartbeat messages to all of the other servers
 						// to establish its authority and prevent new elections.
