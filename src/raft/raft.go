@@ -309,12 +309,19 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 
 	// If RPC request or response contains Term T > currentTerm:
 	// set currentTerm = T, convert to follower.
-	rf.currentTerm = request.Term
+	if rf.currentTerm < request.Term {
+		Debug(
+			dTerm, "S%d Term is higher than S%d, updating (%d > %d)",
+			request.CandidateId, rf.me, request.Term, rf.currentTerm,
+		)
+		rf.currentTerm = request.Term
+	}
+
 	rf.convertTo(Follower)
 	rf.voteFor = request.CandidateId
 	rf.electionTimer.Reset(electionTimeout())
 	reply.VoteGranted = true
-	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, rf.voteFor, rf.currentTerm)
+	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -408,6 +415,8 @@ func (rf *Raft) startElection() {
 	rf.voteFor = rf.me
 	rf.electionTimer.Reset(electionTimeout())
 	grantVotes := 1
+
+	Debug(dTerm, "S%d Converting to Candidate, calling election in T%d", rf.me, rf.currentTerm)
 
 	request := &RequestVoteRequest{
 		Term:        rf.currentTerm,
