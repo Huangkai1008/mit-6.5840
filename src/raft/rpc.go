@@ -6,8 +6,6 @@ import "fmt"
 //
 // Notes: field names must start with capital letters!
 type RequestVoteRequest struct {
-	// Your data here (2A, 2B).
-
 	// Term is the candidate's Term.
 	Term Term
 	// CandidateId is a candidate requesting vote,
@@ -44,6 +42,16 @@ type AppendEntriesRequest struct {
 	Term Term
 	// LeaderId, which followers can use this to redirect clients.
 	LeaderId int
+	// PrevLogIndex is the index of log entry immediately preceding new ones.
+	PrevLogIndex int
+	// PrevLogTerm is the term of PrevLogIndex entry.
+	PrevLogTerm Term
+	// Entries to store.
+	//
+	// Empty for heartbeat; may send more than one for efficiency.
+	Entries []Entry
+	// LeaderCommit is the leader's commitIndex.
+	LeaderCommit int
 }
 
 func (r *AppendEntriesRequest) String() string {

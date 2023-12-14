@@ -78,7 +78,16 @@ func winMajority(grantVotes, allVotes int) bool {
 	return grantVotes > allVotes/2
 }
 
+// Entry contains the term in which it was created (the number in each box)
+// and a command for the state machine.
+//
+// Logs are composed of Entry, which are numbered sequentially.
+//
+// An entry is considered committed if it is safe for that entry to be applied to state machines.
 type Entry struct {
+	index   int
+	term    Term
+	command interface{}
 }
 
 // Raft is a Go object implementing a single Raft peer.
@@ -180,6 +189,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 // GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
+	// TODO: use rwlock
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -253,6 +263,27 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
+}
+
+func (rf *Raft) getFirstEntry() Entry {
+	return rf.logs[0]
+}
+
+func (rf *Raft) getLastEntry() Entry {
+	return rf.logs[len(rf.logs)-1]
+}
+
+func (rf *Raft) newAppendEntriesRequest() *AppendEntriesRequest {
+	lastEntry := rf.getLastEntry()
+
+	return &AppendEntriesRequest{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: lastEntry.index,
+		PrevLogTerm:  lastEntry.term,
+		Entries:      nil,
+		LeaderCommit: 0,
+	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, request *AppendEntriesRequest, reply *AppendEntriesReply) bool {
@@ -367,19 +398,24 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
 }
 
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
+// Start agreement on a new log entry.
+//
+// The service using Raft (e.g. a k/v server) wants to start
+// agreement on the next command to be appended to Raft's log. If this
+// server isn't the leader, returns false. Otherwise, start the
+// agreement and return immediately. There is no guarantee that this
 // command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
+// may fail or lose an election. Even if the Raft instance has been killed,
 // this function should return gracefully.
 //
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// Term. the third return value is true if this server believes it is
+// The first return value is the index that the command will appear at
+// if it's ever committed. The second return value is the current
+// Term. The third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	index := -1
 	term := -1
 	isLeader := true
@@ -524,13 +560,5 @@ func (rf *Raft) ticker() {
 			rf.startElection()
 			rf.mu.Unlock()
 		}
-
-		// Your code here (2A)
-		// Check if a leader election should be started.
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		//ms := 50 + (rand.Int63() % 300)
-		//time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
