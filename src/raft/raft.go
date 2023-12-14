@@ -78,6 +78,9 @@ func winMajority(grantVotes, allVotes int) bool {
 	return grantVotes > allVotes/2
 }
 
+type Entry struct {
+}
+
 // Raft is a Go object implementing a single Raft peer.
 //
 // According to the paper's Figure 2, a Raft server must maintain three types of states:
@@ -105,6 +108,24 @@ type Raft struct {
 	// in the current Term (or null if none)
 	// At the beginning, the field is null.
 	voteFor int
+	// log entries;
+	// each entry contains command for state machine,
+	// and term when entry was received by leader (first index is 1)
+	logs []Entry
+
+	// commitIndex is the index of highest log entry known to be committed
+	// It initialized to 0, increases monotonically.
+	commitIndex int
+	// lastApplied is the index of highest log entry applied to state machine
+	// It initialized to 0, increases monotonically.
+	lastApplied int
+
+	// For each server, index of the next log entry to
+	// send to that server (initialized to leader last log index + 1).
+	nextIndex []int
+	// For each server, index of highest log entry known to
+	// be replicated on server (initialized to 0, increases monotonically).
+	matchIndex []int
 
 	heartBeatTimer *time.Timer
 	electionTimer  *time.Timer
@@ -136,6 +157,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		state: Follower,
 
 		currentTerm: 0,
+		voteFor:     -1,
+
+		commitIndex: 0,
+		lastApplied: 0,
 
 		heartBeatTimer: time.NewTimer(heartBeatInterval()),
 		electionTimer:  time.NewTimer(electionTimeout()),
@@ -171,6 +196,11 @@ func (rf *Raft) isMe(server int) bool {
 
 func (rf *Raft) convertTo(state State) {
 	rf.state = state
+
+	switch rf.state {
+	case Follower:
+		rf.heartBeatTimer.Stop()
+	}
 }
 
 // save the Raft's persistent state to stable storage,
