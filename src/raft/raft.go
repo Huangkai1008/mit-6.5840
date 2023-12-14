@@ -200,6 +200,11 @@ func (rf *Raft) convertTo(state State) {
 	switch rf.state {
 	case Follower:
 		rf.heartBeatTimer.Stop()
+		rf.electionTimer.Reset(electionTimeout())
+	case Candidate:
+	case Leader:
+		rf.electionTimer.Stop()
+		rf.heartBeatTimer.Reset(heartBeatInterval())
 	}
 }
 
@@ -285,7 +290,6 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	rf.convertTo(Follower)
 	reply.Term = rf.currentTerm
 	reply.Success = true
-	rf.electionTimer.Reset(electionTimeout())
 	Debug(dTimer, "S%d received S%d heartbeat in T%d", rf.me, request.LeaderId, rf.currentTerm)
 }
 
@@ -352,13 +356,12 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 			dTerm, "S%d Term is higher than S%d, updating (%d > %d)",
 			request.CandidateId, rf.me, request.Term, rf.currentTerm,
 		)
-		rf.convertTo(Follower)
 		rf.currentTerm = request.Term
 		rf.voteFor = -1
 	}
 
+	rf.convertTo(Follower)
 	rf.voteFor = request.CandidateId
-	rf.electionTimer.Reset(electionTimeout())
 	reply.VoteGranted = true
 	reply.Term = rf.currentTerm
 	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
