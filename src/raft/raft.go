@@ -249,9 +249,10 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	// returns to follower state
 	if request.Term > rf.currentTerm {
 		rf.currentTerm = request.Term
-		rf.convertTo(Follower)
+		rf.voteFor = -1
 	}
 
+	rf.convertTo(Follower)
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	rf.electionTimer.Reset(electionTimeout())
@@ -307,20 +308,29 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 		return
 	}
 
+	// Each server will vote for at most one candidate in a given term, on a first-come-first-served basis.
+	if request.Term == rf.currentTerm && rf.voteFor != -1 && rf.voteFor != request.CandidateId {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
 	// If RPC request or response contains Term T > currentTerm:
 	// set currentTerm = T, convert to follower.
-	if rf.currentTerm < request.Term {
+	if request.Term > rf.currentTerm {
 		Debug(
 			dTerm, "S%d Term is higher than S%d, updating (%d > %d)",
 			request.CandidateId, rf.me, request.Term, rf.currentTerm,
 		)
+		rf.convertTo(Follower)
 		rf.currentTerm = request.Term
+		rf.voteFor = -1
 	}
 
-	rf.convertTo(Follower)
 	rf.voteFor = request.CandidateId
 	rf.electionTimer.Reset(electionTimeout())
 	reply.VoteGranted = true
+	reply.Term = rf.currentTerm
 	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
 }
 
@@ -368,7 +378,7 @@ func (rf *Raft) killed() bool {
 // broadcastHeartBeat send initial empty AppendEntries RPCs (heartbeat) to each server.
 // repeat during idle periods to prevent election timeouts
 func (rf *Raft) broadcastHeartBeat() {
-	Debug(dTimer, "S%d Leader, checking heartbeats.")
+	Debug(dTimer, "S%d Leader, checking heartbeats.", rf.me)
 
 	request := &AppendEntriesRequest{
 		Term:     rf.currentTerm,
@@ -393,6 +403,7 @@ func (rf *Raft) broadcastHeartBeat() {
 
 				if rf.currentTerm < reply.Term {
 					rf.currentTerm = reply.Term
+					rf.voteFor = -1
 					rf.convertTo(Follower)
 				}
 			}
@@ -438,25 +449,27 @@ func (rf *Raft) startElection() {
 				//	"{Node %v} receives reply %v from {Node %v} after sending `RequestVote` RPC request %v in term %d",
 				//	rf.me, reply, peer, request, rf.currentTerm,
 				//)
+				if rf.currentTerm == request.Term && rf.state == Candidate {
+					if reply.VoteGranted {
+						Debug(dVote, "S%d <- S%d Got vote", rf.me, peer)
 
-				if reply.VoteGranted {
-					Debug(dVote, "S%d <- S%d Got vote", rf.me, peer)
-
-					grantVotes++
-					if winMajority(grantVotes, len(rf.peers)) {
-						Debug(
-							dLeader, "S%d Achieved Majority for T%d (%d/%d), converting to Leader",
-							rf.me, rf.currentTerm, grantVotes, len(rf.peers),
-						)
-						// Once a candidate wins an election, it becomes leader.
-						// It then sends heartbeat messages to all of the other servers
-						// to establish its authority and prevent new elections.
-						rf.convertTo(Leader)
-						rf.broadcastHeartBeat()
+						grantVotes++
+						if winMajority(grantVotes, len(rf.peers)) {
+							Debug(
+								dLeader, "S%d Achieved Majority for T%d (%d/%d), converting to Leader",
+								rf.me, rf.currentTerm, grantVotes, len(rf.peers),
+							)
+							// Once a candidate wins an election, it becomes leader.
+							// It then sends heartbeat messages to all of the other servers
+							// to establish its authority and prevent new elections.
+							rf.convertTo(Leader)
+							rf.broadcastHeartBeat()
+						}
+					} else if rf.currentTerm < reply.Term {
+						rf.currentTerm = reply.Term
+						rf.voteFor = -1
+						rf.convertTo(Follower)
 					}
-				} else if rf.currentTerm < reply.Term {
-					rf.currentTerm = reply.Term
-					rf.convertTo(Follower)
 				}
 			}
 		}(peer)
