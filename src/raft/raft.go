@@ -100,7 +100,7 @@ type Entry struct {
 //
 // 3. Volatile state on leaders (Reinitialized after election).
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        sync.RWMutex        // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -189,14 +189,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 // GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	// TODO: use rwlock
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
 
 	return rf.currentTerm, rf.isLeader()
 }
 
 func (rf *Raft) isLeader() bool {
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
+
 	return rf.state == Leader
 }
 
