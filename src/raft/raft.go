@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -88,6 +89,10 @@ type Entry struct {
 	index   int
 	term    Term
 	command interface{}
+}
+
+func (entry Entry) String() string {
+	return fmt.Sprintf("Entry(index = %d, term = %d)", entry.index, entry.term)
 }
 
 // Raft is a Go object implementing a single Raft peer.
@@ -167,9 +172,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 		currentTerm: 0,
 		voteFor:     -1,
+		logs:        make([]Entry, 1), // dummy log
 
 		commitIndex: 0,
 		lastApplied: 0,
+
+		nextIndex:  make([]int, len(peers)),
+		matchIndex: make([]int, len(peers)),
 
 		heartBeatTimer: time.NewTimer(heartBeatInterval()),
 		electionTimer:  time.NewTimer(electionTimeout()),
@@ -215,6 +224,14 @@ func (rf *Raft) convertTo(state State) {
 		rf.electionTimer.Reset(electionTimeout())
 	case Candidate:
 	case Leader:
+		lastEntry := rf.getLastLogEntry()
+		// When a leader first comes to power,
+		// it initializes all nextIndex values to the index just after the last one in its log.
+		for i := 0; i < len(rf.peers); i++ {
+			rf.nextIndex[i] = lastEntry.index + 1
+			rf.matchIndex[i] = 0
+		}
+
 		rf.electionTimer.Stop()
 		rf.heartBeatTimer.Reset(heartBeatInterval())
 	}
@@ -267,29 +284,38 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-func (rf *Raft) getFirstEntry() Entry {
+// the first entry is a dummy entry, which index is 0, term is 0.
+func (rf *Raft) getFirstLogEntry() Entry {
 	return rf.logs[0]
 }
 
-func (rf *Raft) getLastEntry() Entry {
+func (rf *Raft) getLastLogEntry() Entry {
 	return rf.logs[len(rf.logs)-1]
 }
 
-func (rf *Raft) newAppendEntriesRequest() *AppendEntriesRequest {
-	lastEntry := rf.getLastEntry()
+func (rf *Raft) match(prevLogIndex int) bool {
+	lastEntry := rf.getLastLogEntry()
+	if prevLogIndex > lastEntry.index {
+		return false
+	}
+
+}
+
+func (rf *Raft) newAppendEntriesRequest(peer int) *AppendEntriesRequest {
+	lastEntry := rf.getLastLogEntry()
 
 	return &AppendEntriesRequest{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		PrevLogIndex: lastEntry.index,
 		PrevLogTerm:  lastEntry.term,
-		Entries:      nil,
-		LeaderCommit: 0,
+		Entries:      make([]Entry, 0),
+		LeaderCommit: rf.commitIndex,
 	}
 }
 
-func (rf *Raft) sendAppendEntries(server int, request *AppendEntriesRequest, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", request, reply)
+func (rf *Raft) sendAppendEntries(peer int, request *AppendEntriesRequest, reply *AppendEntriesReply) bool {
+	ok := rf.peers[peer].Call("Raft.AppendEntries", request, reply)
 	return ok
 }
 
@@ -451,11 +477,7 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) broadcastHeartBeat() {
 	Debug(dTimer, "S%d Leader, checking heartbeats.", rf.me)
 
-	request := &AppendEntriesRequest{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
-	}
-
+	request := rf.newAppendEntriesRequest()
 	for peer := range rf.peers {
 		if rf.isMe(peer) {
 			continue
@@ -481,6 +503,13 @@ func (rf *Raft) broadcastHeartBeat() {
 
 		}(peer)
 	}
+}
+
+// The leader appends the command to its log as a new entry,
+// then issues AppendEntries RPCs in parallel to each of the other servers to replicate the entry
+func (rf *Raft) replicateEntries() {
+	Debug(dTimer, "S%d Leader, replicating entries.", rf.me)
+	//request := rf.newAppendEntriesRequest()
 }
 
 // startElection invoked when election timeout elapses
