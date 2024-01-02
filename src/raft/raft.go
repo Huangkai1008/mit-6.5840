@@ -293,12 +293,15 @@ func (rf *Raft) getLastLogEntry() Entry {
 	return rf.logs[len(rf.logs)-1]
 }
 
-func (rf *Raft) match(prevLogIndex int) bool {
-	lastEntry := rf.getLastLogEntry()
-	if prevLogIndex > lastEntry.index {
-		return false
-	}
-
+// match returns whether the follower finds an entry in its log
+// with the same index and term.
+//
+// According to the `Log Matching Property`:
+// if two logs contain an entry with the same index and term,
+// then the logs are identical in all entries up through the given index.
+func (rf *Raft) match(prevLogIndex, prevLogTerm int) bool {
+	return prevLogIndex <= rf.getLastLogEntry().index &&
+		rf.logs[prevLogIndex-rf.getFirstLogEntry().index].term == prevLogTerm
 }
 
 func (rf *Raft) newAppendEntriesRequest(peer int) *AppendEntriesRequest {
@@ -347,6 +350,15 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	}
 
 	rf.convertTo(Follower)
+
+	// If the follower does not find an entry in its log with the same index and term,
+	// then it refuses the new entries.
+	if !rf.match(request.PrevLogIndex, request.PrevLogTerm) {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	Debug(dTimer, "S%d received S%d heartbeat in T%d", rf.me, request.LeaderId, rf.currentTerm)
