@@ -376,6 +376,58 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	Debug(dTimer, "S%d received S%d heartbeat at T%d", rf.me, request.LeaderId, rf.currentTerm)
 }
 
+func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest, reply *AppendEntriesReply) {
+	// If the reply is outdated, ignore it.
+	if !rf.isLeader() || rf.currentTerm != request.Term {
+		return
+	}
+
+	if reply.Success {
+		// TODO: match index
+		return
+	}
+
+	if rf.currentTerm < reply.Term {
+		rf.currentTerm = reply.Term
+		rf.voteFor = -1
+		rf.convertTo(Follower)
+	} else if rf.currentTerm == reply.Term {
+		// TODO: use conflict index
+		rf.nextIndex[peer] -= 1
+	}
+}
+
+// broadcastHeartBeat send initial empty AppendEntries RPCs (heartbeat) to each server.
+// repeat during idle periods to prevent election timeouts
+// TODO: replicate in batch
+func (rf *Raft) broadcastHeartBeat() {
+	Debug(dTimer, "S%d Leader, checking heartbeats.", rf.me)
+
+	for peer := range rf.peers {
+		if rf.isMe(peer) {
+			continue
+		}
+
+		go func(peer int) {
+			prevLogIndex := rf.nextIndex[peer] - 1
+			request := rf.newAppendEntriesRequest(prevLogIndex)
+			reply := new(AppendEntriesReply)
+			Debug(
+				dLog, "S%d -> S%d, AE: %v", rf.me, peer, request,
+			)
+
+			if rf.sendAppendEntries(peer, request, reply) {
+				Debug(dLog, "S%d <- S%d, AE: %v", rf.me, peer, reply)
+
+				rf.mu.Lock()
+				rf.handleAppendEntriesReply(peer, request, reply)
+				rf.mu.Unlock()
+			}
+
+		}(peer)
+	}
+}
+
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
@@ -450,6 +502,18 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
 }
 
+func (rf *Raft) appendNewEntry(command interface{}) Entry {
+	lastLogEntry := rf.getLastLogEntry()
+	entry := Entry{
+		Index:   lastLogEntry.Index + 1,
+		Term:    rf.currentTerm,
+		Command: command,
+	}
+
+	rf.logs = append(rf.logs, entry)
+	return entry
+}
+
 // Start agreement on a new log entry.
 //
 // The service using Raft (e.g. a k/v server) wants to start
@@ -468,13 +532,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	index := -1
-	term := -1
-	isLeader := true
+	if !rf.isLeader() {
+		return -1, -1, false
+	}
 
-	// Your code here (2B).
-
-	return index, term, isLeader
+	entry := rf.appendNewEntry(command)
+	rf.broadcastHeartBeat()
+	return entry.Index, entry.Term, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -494,41 +558,6 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
-}
-
-// broadcastHeartBeat send initial empty AppendEntries RPCs (heartbeat) to each server.
-// repeat during idle periods to prevent election timeouts
-func (rf *Raft) broadcastHeartBeat() {
-	Debug(dTimer, "S%d Leader, checking heartbeats.", rf.me)
-
-	for peer := range rf.peers {
-		if rf.isMe(peer) {
-			continue
-		}
-
-		go func(peer int) {
-			prevLogIndex := rf.nextIndex[peer] - 1
-			request := rf.newAppendEntriesRequest(prevLogIndex)
-			reply := new(AppendEntriesReply)
-			Debug(
-				dLog, "S%d -> S%d, AE: %v", rf.me, peer, request,
-			)
-
-			if rf.sendAppendEntries(peer, request, reply) {
-
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
-
-				Debug(dLog, "S%d <- S%d, AE: %v", rf.me, peer, reply)
-				if rf.currentTerm < reply.Term {
-					rf.currentTerm = reply.Term
-					rf.voteFor = -1
-					rf.convertTo(Follower)
-				}
-			}
-
-		}(peer)
-	}
 }
 
 // The leader appends the command to its log as a new entry,
