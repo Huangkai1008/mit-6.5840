@@ -304,15 +304,15 @@ func (rf *Raft) match(prevLogIndex, prevLogTerm int) bool {
 	return prevLogIndex <= rf.getLastLogEntry().index && rf.logs[prevLogIndex].term == prevLogTerm
 }
 
-func (rf *Raft) newAppendEntriesRequest(peer int) *AppendEntriesRequest {
-	lastEntry := rf.getLastLogEntry()
-	nextIndex := rf.nextIndex[peer]
+func (rf *Raft) newAppendEntriesRequest(prevLogIndex int) *AppendEntriesRequest {
+	entries := make([]Entry, len(rf.logs[prevLogIndex+1:]))
+	copy(entries, rf.logs[prevLogIndex+1:])
 
 	return &AppendEntriesRequest{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
-		PrevLogIndex: lastEntry.index,
-		PrevLogTerm:  lastEntry.term,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  rf.logs[prevLogIndex].term,
 		Entries:      make([]Entry, 0),
 		LeaderCommit: rf.commitIndex,
 	}
@@ -355,9 +355,23 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	// If the follower does not find an entry in its log with the same index and term,
 	// then it refuses the new entries.
 	if !rf.match(request.PrevLogIndex, request.PrevLogTerm) {
+		// TODO: include the term of the conflicting entry and the first index it stores for that term
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
+	}
+
+	// Replicate logs.
+	//
+	// Notes: If there are no conflicting logs, do not delete any follower logs, as follower logs may be more recent.
+	for index, entry := range request.Entries {
+		// Find the latest log entry where the two logs agree,
+		// delete any entries in the follower’s log after that point,
+		// and send the follower all of the leader’s entries after that point.
+		if entry.index > rf.getLastLogEntry().index || rf.logs[entry.index].term != entry.term {
+			rf.logs = append(rf.logs[:entry.index], request.Entries[index:]...)
+			break
+		}
 	}
 
 	reply.Term = rf.currentTerm
@@ -496,7 +510,8 @@ func (rf *Raft) broadcastHeartBeat() {
 		}
 
 		go func(peer int) {
-			request := rf.newAppendEntriesRequest(peer)
+			prevLogIndex := rf.nextIndex[peer]
+			request := rf.newAppendEntriesRequest(prevLogIndex)
 			reply := new(AppendEntriesReply)
 			Debug(
 				dLog, "S%d -> S%d, AE: %v", rf.me, peer, request,

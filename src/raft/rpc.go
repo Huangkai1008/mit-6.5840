@@ -14,7 +14,7 @@ type RequestVoteRequest struct {
 }
 
 func (r *RequestVoteRequest) String() string {
-	return fmt.Sprintf("Request(Term = %d, CandidateId = %d)", r.Term, r.CandidateId)
+	return fmt.Sprintf("Request(CandidateId = %d with T%d)", r.CandidateId, r.Term)
 }
 
 // RequestVoteReply is the `RequestVote` RPC reply structure.
@@ -33,7 +33,7 @@ type RequestVoteReply struct {
 }
 
 func (r *RequestVoteReply) String() string {
-	return fmt.Sprintf("Reply(Term = %d, VoteGranted = %v)", r.Term, r.VoteGranted)
+	return fmt.Sprintf("Reply(VoteGranted = %v with T%d)", r.VoteGranted, r.Term)
 }
 
 // AppendEntriesRequest is the `AppendEntries` RPC arguments structure.
@@ -55,7 +55,8 @@ type AppendEntriesRequest struct {
 }
 
 func (r *AppendEntriesRequest) String() string {
-	return fmt.Sprintf("Request(Term = %d, LeaderId = %d)", r.Term, r.LeaderId)
+	return fmt.Sprintf("Request(PLI = %d, PLT = %d, LeaderCommit = %d, Entries = %v with T%d)",
+		r.PrevLogIndex, r.PrevLogTerm, r.LeaderCommit, r.Entries, r.Term)
 }
 
 // AppendEntriesReply is the `AppendEntries` RPC reply structure.
@@ -68,5 +69,5 @@ type AppendEntriesReply struct {
 }
 
 func (r *AppendEntriesReply) String() string {
-	return fmt.Sprintf("Reply(Term = %d, Success = %v)", r.Term, r.Success)
+	return fmt.Sprintf("Reply(Success = %v with T%d)", r.Success, r.Term)
 }
