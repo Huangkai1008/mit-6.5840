@@ -79,20 +79,20 @@ func winMajority(grantVotes, allVotes int) bool {
 	return grantVotes > allVotes/2
 }
 
-// Entry contains the term in which it was created (the number in each box)
-// and a command for the state machine.
+// Entry contains the Term in which it was created (the number in each box)
+// and a Command for the state machine.
 //
 // Logs are composed of Entry, which are numbered sequentially.
 //
 // An entry is considered committed if it is safe for that entry to be applied to state machines.
 type Entry struct {
-	index   int
-	term    Term
-	command interface{}
+	Index   int
+	Term    Term
+	Command interface{}
 }
 
 func (entry Entry) String() string {
-	return fmt.Sprintf("Entry(index = %d, term = %d)", entry.index, entry.term)
+	return fmt.Sprintf("Entry(Index = %d, Term = %d)", entry.Index, entry.Term)
 }
 
 // Raft is a Go object implementing a single Raft peer.
@@ -205,9 +205,6 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 func (rf *Raft) isLeader() bool {
-	rf.mu.RLock()
-	defer rf.mu.RUnlock()
-
 	return rf.state == Leader
 }
 
@@ -229,7 +226,7 @@ func (rf *Raft) convertTo(state State) {
 		// When a leader first comes to power,
 		// it initializes all nextIndex values to the index just after the last one in its log.
 		for i := 0; i < len(rf.peers); i++ {
-			rf.nextIndex[i] = lastEntry.index + 1
+			rf.nextIndex[i] = lastEntry.Index + 1
 			rf.matchIndex[i] = 0
 		}
 
@@ -301,7 +298,7 @@ func (rf *Raft) getLastLogEntry() Entry {
 // if two logs contain an entry with the same index and term,
 // then the logs are identical in all entries up through the given index.
 func (rf *Raft) match(prevLogIndex, prevLogTerm int) bool {
-	return prevLogIndex <= rf.getLastLogEntry().index && rf.logs[prevLogIndex].term == prevLogTerm
+	return prevLogIndex <= rf.getLastLogEntry().Index && rf.logs[prevLogIndex].Term == prevLogTerm
 }
 
 func (rf *Raft) newAppendEntriesRequest(prevLogIndex int) *AppendEntriesRequest {
@@ -312,7 +309,7 @@ func (rf *Raft) newAppendEntriesRequest(prevLogIndex int) *AppendEntriesRequest 
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  rf.logs[prevLogIndex].term,
+		PrevLogTerm:  rf.logs[prevLogIndex].Term,
 		Entries:      make([]Entry, 0),
 		LeaderCommit: rf.commitIndex,
 	}
@@ -368,8 +365,8 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 		// Find the latest log entry where the two logs agree,
 		// delete any entries in the follower’s log after that point,
 		// and send the follower all of the leader’s entries after that point.
-		if entry.index > rf.getLastLogEntry().index || rf.logs[entry.index].term != entry.term {
-			rf.logs = append(rf.logs[:entry.index], request.Entries[index:]...)
+		if entry.Index > rf.getLastLogEntry().Index || rf.logs[entry.Index].Term != entry.Term {
+			rf.logs = append(rf.logs[:entry.Index], request.Entries[index:]...)
 			break
 		}
 	}
@@ -510,7 +507,7 @@ func (rf *Raft) broadcastHeartBeat() {
 		}
 
 		go func(peer int) {
-			prevLogIndex := rf.nextIndex[peer]
+			prevLogIndex := rf.nextIndex[peer] - 1
 			request := rf.newAppendEntriesRequest(prevLogIndex)
 			reply := new(AppendEntriesReply)
 			Debug(
