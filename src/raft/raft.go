@@ -220,6 +220,7 @@ func (rf *Raft) convertTo(state State) {
 
 	switch rf.state {
 	case Follower:
+		Debug(dTimer, "S%d I'm follower, pausing HBT")
 		rf.heartBeatTimer.Stop()
 		rf.electionTimer.Reset(electionTimeout())
 	case Candidate:
@@ -300,12 +301,12 @@ func (rf *Raft) getLastLogEntry() Entry {
 // if two logs contain an entry with the same index and term,
 // then the logs are identical in all entries up through the given index.
 func (rf *Raft) match(prevLogIndex, prevLogTerm int) bool {
-	return prevLogIndex <= rf.getLastLogEntry().index &&
-		rf.logs[prevLogIndex-rf.getFirstLogEntry().index].term == prevLogTerm
+	return prevLogIndex <= rf.getLastLogEntry().index && rf.logs[prevLogIndex].term == prevLogTerm
 }
 
 func (rf *Raft) newAppendEntriesRequest(peer int) *AppendEntriesRequest {
 	lastEntry := rf.getLastLogEntry()
+	nextIndex := rf.nextIndex[peer]
 
 	return &AppendEntriesRequest{
 		Term:         rf.currentTerm,
@@ -361,7 +362,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
-	Debug(dTimer, "S%d received S%d heartbeat in T%d", rf.me, request.LeaderId, rf.currentTerm)
+	Debug(dTimer, "S%d received S%d heartbeat at T%d", rf.me, request.LeaderId, rf.currentTerm)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -489,23 +490,24 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) broadcastHeartBeat() {
 	Debug(dTimer, "S%d Leader, checking heartbeats.", rf.me)
 
-	request := rf.newAppendEntriesRequest()
 	for peer := range rf.peers {
 		if rf.isMe(peer) {
 			continue
 		}
 
 		go func(peer int) {
+			request := rf.newAppendEntriesRequest(peer)
 			reply := new(AppendEntriesReply)
+			Debug(
+				dLog, "S%d -> S%d, AE: %v", rf.me, peer, request,
+			)
+
 			if rf.sendAppendEntries(peer, request, reply) {
+
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				//DPrintf(
-				//	"{Node %v} receives reply %v from {Node %v} after sending `AppendEntries` RPC request %v in term %d",
-				//	rf.me, reply, peer, request, rf.currentTerm,
-				//)
-
+				Debug(dLog, "S%d <- S%d, AE: %v", rf.me, peer, reply)
 				if rf.currentTerm < reply.Term {
 					rf.currentTerm = reply.Term
 					rf.voteFor = -1
@@ -536,6 +538,8 @@ func (rf *Raft) startElection() {
 	rf.convertTo(Candidate)
 	rf.currentTerm++
 	rf.voteFor = rf.me
+
+	Debug(dTimer, "S%d Resetting election timeout because election")
 	rf.electionTimer.Reset(electionTimeout())
 	grantVotes := 1
 
@@ -553,14 +557,14 @@ func (rf *Raft) startElection() {
 
 		go func(peer int) {
 			reply := new(RequestVoteReply)
+			Debug(dLog, "S%d -> S%d, RV: %v", rf.me, peer, request)
+
 			if rf.sendRequestVote(peer, request, reply) {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				//DPrintf(
-				//	"{Node %v} receives reply %v from {Node %v} after sending `RequestVote` RPC request %v in term %d",
-				//	rf.me, reply, peer, request, rf.currentTerm,
-				//)
+				Debug(dLog, "S%d <- S%d, RV: %v", rf.me, peer, reply)
+
 				if rf.currentTerm == request.Term && rf.state == Candidate {
 					if reply.VoteGranted {
 						Debug(dVote, "S%d <- S%d Got vote", rf.me, peer)
@@ -571,11 +575,11 @@ func (rf *Raft) startElection() {
 								dLeader, "S%d Achieved Majority for T%d (%d/%d), converting to Leader",
 								rf.me, rf.currentTerm, grantVotes, len(rf.peers),
 							)
+							rf.convertTo(Leader)
+							rf.broadcastHeartBeat()
 							// Once a candidate wins an election, it becomes leader.
 							// It then sends heartbeat messages to all of the other servers
 							// to establish its authority and prevent new elections.
-							rf.convertTo(Leader)
-							rf.broadcastHeartBeat()
 						}
 					} else if rf.currentTerm < reply.Term {
 						rf.currentTerm = reply.Term
@@ -599,9 +603,12 @@ func (rf *Raft) ticker() {
 			}
 			rf.mu.Unlock()
 		case <-rf.electionTimer.C:
-			rf.mu.Lock()
-			rf.startElection()
-			rf.mu.Unlock()
+			if !rf.isLeader() {
+				Debug(dTimer, "S%d Not Leader, checking election timeout")
+				rf.mu.Lock()
+				rf.startElection()
+				rf.mu.Unlock()
+			}
 		}
 	}
 }
