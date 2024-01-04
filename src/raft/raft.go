@@ -141,6 +141,9 @@ type Raft struct {
 	// be replicated on server (initialized to 0, increases monotonically).
 	matchIndex []int
 
+	applyCh   chan ApplyMsg
+	applyCond *sync.Cond
+
 	heartBeatTimer *time.Timer
 	electionTimer  *time.Timer
 
@@ -233,6 +236,11 @@ func (rf *Raft) convertTo(state State) {
 		rf.electionTimer.Stop()
 		rf.heartBeatTimer.Reset(heartBeatInterval())
 	}
+}
+
+func (rf *Raft) updateTerm(term Term) {
+	rf.currentTerm = term
+	rf.voteFor = -1
 }
 
 // save the Raft's persistent state to stable storage,
@@ -343,8 +351,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	// then the candidate recognizes the leader as legitimate and
 	// returns to follower state
 	if request.Term > rf.currentTerm {
-		rf.currentTerm = request.Term
-		rf.voteFor = -1
+		rf.updateTerm(request.Term)
 	}
 
 	rf.convertTo(Follower)
@@ -371,6 +378,11 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 		}
 	}
 
+	// Follower commit.
+	if request.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(request.LeaderCommit, rf.getLastLogEntry().Index)
+	}
+
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	Debug(dTimer, "S%d received S%d heartbeat at T%d", rf.me, request.LeaderId, rf.currentTerm)
@@ -383,13 +395,13 @@ func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest
 	}
 
 	if reply.Success {
-		// TODO: match index
+		rf.matchIndex[peer] = request.PrevLogIndex + len(request.Entries)
+		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
 		return
 	}
 
 	if rf.currentTerm < reply.Term {
-		rf.currentTerm = reply.Term
-		rf.voteFor = -1
+		rf.updateTerm(reply.Term)
 		rf.convertTo(Follower)
 	} else if rf.currentTerm == reply.Term {
 		// TODO: use conflict index
@@ -491,8 +503,8 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 			dTerm, "S%d Term is higher than S%d, updating (%d > %d)",
 			request.CandidateId, rf.me, request.Term, rf.currentTerm,
 		)
-		rf.currentTerm = request.Term
-		rf.voteFor = -1
+
+		rf.updateTerm(request.Term)
 	}
 
 	rf.convertTo(Follower)
