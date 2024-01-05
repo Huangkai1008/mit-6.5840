@@ -11,10 +11,15 @@ type RequestVoteRequest struct {
 	// CandidateId is a candidate requesting vote,
 	// which is the server id in this lab.
 	CandidateId int
+	// LastLogIndex is the index of candidate’s last log entry.
+	LastLogIndex int
+	// LastLogTerm is the term of candidate’s last log entry.
+	LastLogTerm Term
 }
 
 func (r *RequestVoteRequest) String() string {
-	return fmt.Sprintf("Request(CandidateId = %d with T%d)", r.CandidateId, r.Term)
+	return fmt.Sprintf("Request(CandidateId = %d, LastLogIndex = %d, LastLogTerm = %d, with T%d)",
+		r.CandidateId, r.LastLogIndex, r.LastLogTerm, r.Term)
 }
 
 // RequestVoteReply is the `RequestVote` RPC reply structure.

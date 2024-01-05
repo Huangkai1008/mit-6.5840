@@ -364,6 +364,18 @@ func (rf *Raft) sendAppendEntries(peer int, request *AppendEntriesRequest, reply
 	return ok
 }
 
+// Raft determines which of two logs is more up-to-date by
+// comparing the index and term of the last entries in the logs.
+//
+// If the logs have last entries with different terms,
+// then the log with the later term is more up-to-date.
+// If the logs end with the same term,
+// then whichever log is longer is more up-to-date.
+func (rf *Raft) isUpToDate(logIndex int, term Term) bool {
+	lastLogEntry := rf.getLastLogEntry()
+	return term > lastLogEntry.Term || (term == lastLogEntry.Term && logIndex >= lastLogEntry.Index)
+}
+
 // AppendEntries RPC handler
 //
 // Which is invoked by leader to replicate log entries (§5.3); also used as heartbeat (§5.2).
@@ -479,6 +491,17 @@ func (rf *Raft) broadcastAppendEntries(isHeartBeat bool) {
 	}
 }
 
+func (rf *Raft) newRequestVoteRequest() *RequestVoteRequest {
+	lastLogEntry := rf.getLastLogEntry()
+
+	return &RequestVoteRequest{
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: lastLogEntry.Index,
+		LastLogTerm:  lastLogEntry.Term,
+	}
+}
+
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
@@ -546,10 +569,20 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 		rf.updateTerm(request.Term)
 	}
 
+	// Election restriction (§5.4.1)
+	//
+	// The voter denies its vote if its own log is more up-to-date than
+	// that of the candidate.
+	if !rf.isUpToDate(request.LastLogIndex, request.LastLogTerm) {
+		Debug(dLog2, "S%d Reject S%d vote", rf.me, request.CandidateId)
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+	}
+
 	rf.convertTo(Follower)
 	rf.voteFor = request.CandidateId
-	reply.VoteGranted = true
 	reply.Term = rf.currentTerm
+	reply.VoteGranted = true
 	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
 }
 
@@ -584,7 +617,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	defer rf.mu.Unlock()
 
 	if !rf.isLeader() {
-		return -1, -1, false
+		return -1, rf.currentTerm, false
 	}
 
 	entry := rf.appendNewEntry(command)
@@ -612,13 +645,6 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// The leader appends the command to its log as a new entry,
-// then issues AppendEntries RPCs in parallel to each of the other servers to replicate the entry
-func (rf *Raft) replicateEntries() {
-	Debug(dTimer, "S%d Leader, replicating entries.", rf.me)
-	//request := rf.newAppendEntriesRequest()
-}
-
 // startElection invoked when election timeout elapses
 // without receiving AppendEntries RPC from
 // the current leader or granting vote to candidate.
@@ -638,10 +664,7 @@ func (rf *Raft) startElection() {
 
 	Debug(dTerm, "S%d Converting to Candidate, calling election in T%d", rf.me, rf.currentTerm)
 
-	request := &RequestVoteRequest{
-		Term:        rf.currentTerm,
-		CandidateId: rf.me,
-	}
+	request := rf.newRequestVoteRequest()
 
 	for peer := range rf.peers {
 		if rf.isMe(peer) {
