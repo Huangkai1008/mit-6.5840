@@ -20,6 +20,7 @@ package raft
 import (
 	"fmt"
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -170,6 +171,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		peers:     peers,
 		persister: persister,
 		me:        me,
+		applyCh:   applyCh,
 
 		state: Follower,
 
@@ -192,8 +194,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	rf.applyCond = sync.NewCond(&rf.mu)
+
 	// start ticker goroutine to start elections.
 	go rf.ticker()
+
+	// start applier goroutine to apply logs.
+	go rf.applier()
 
 	return rf
 }
@@ -305,8 +312,37 @@ func (rf *Raft) getLastLogEntry() Entry {
 // According to the `Log Matching Property`:
 // if two logs contain an entry with the same index and term,
 // then the logs are identical in all entries up through the given index.
-func (rf *Raft) match(prevLogIndex, prevLogTerm int) bool {
-	return prevLogIndex <= rf.getLastLogEntry().Index && rf.logs[prevLogIndex].Term == prevLogTerm
+func (rf *Raft) match(logIndex, logTerm int) bool {
+	return logIndex <= rf.getLastLogEntry().Index && rf.logs[logIndex].Term == logTerm
+}
+
+// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
+// and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4)
+func (rf *Raft) advanceCommitForLeader() {
+	n := len(rf.matchIndex)
+	cmpMatchIndex := make([]int, n)
+	copy(cmpMatchIndex, rf.matchIndex)
+	sort.Ints(cmpMatchIndex)
+
+	mid := (n - 1) / 2
+	newCommitIndex := cmpMatchIndex[mid]
+	if newCommitIndex > rf.commitIndex {
+		if rf.match(newCommitIndex, rf.currentTerm) {
+			Debug(dLog2, "S%d leader advance commit from %d to %d", rf.me, rf.commitIndex, newCommitIndex)
+			rf.commitIndex = newCommitIndex
+			rf.applyCond.Signal()
+		} else {
+			Debug(dLog2, "S%d leader advance commit from %d to %d, but not match", rf.me, rf.commitIndex, newCommitIndex)
+		}
+	}
+}
+
+func (rf *Raft) advanceCommitForFollower(leaderCommit int) {
+	if leaderCommit > rf.commitIndex {
+		Debug(dLog2, "S%d follower advance commit from %d to %d", rf.me, rf.commitIndex, leaderCommit)
+		rf.commitIndex = min(leaderCommit, rf.getLastLogEntry().Index)
+		rf.applyCond.Signal()
+	}
 }
 
 func (rf *Raft) newAppendEntriesRequest(prevLogIndex int) *AppendEntriesRequest {
@@ -378,10 +414,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 		}
 	}
 
-	// Follower commit.
-	if request.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = min(request.LeaderCommit, rf.getLastLogEntry().Index)
-	}
+	rf.advanceCommitForFollower(request.LeaderCommit)
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
@@ -397,6 +430,7 @@ func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest
 	if reply.Success {
 		rf.matchIndex[peer] = request.PrevLogIndex + len(request.Entries)
 		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+		rf.advanceCommitForLeader()
 		return
 	}
 
@@ -409,11 +443,16 @@ func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest
 	}
 }
 
-// broadcastHeartBeat send initial empty AppendEntries RPCs (heartbeat) to each server.
-// repeat during idle periods to prevent election timeouts
+// broadcastAppendEntries sends AppendEntries RPCs in parallel to each of the other servers to replicate the entry.
+//
+// It is also used as heartbeat.
 // TODO: replicate in batch
-func (rf *Raft) broadcastHeartBeat() {
-	Debug(dTimer, "S%d Leader, checking heartbeats.", rf.me)
+func (rf *Raft) broadcastAppendEntries(isHeartBeat bool) {
+	if isHeartBeat {
+		Debug(dTimer, "S%d Leader, sending heartbeat.", rf.me)
+	} else {
+		Debug(dTimer, "S%d Leader, replicating entries.", rf.me)
+	}
 
 	for peer := range rf.peers {
 		if rf.isMe(peer) {
@@ -549,7 +588,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	entry := rf.appendNewEntry(command)
-	rf.broadcastHeartBeat()
+	rf.matchIndex[rf.me], rf.nextIndex[rf.me] = entry.Index, entry.Index+1
+	rf.broadcastAppendEntries(false)
 	return entry.Index, entry.Term, true
 }
 
@@ -629,7 +669,7 @@ func (rf *Raft) startElection() {
 								rf.me, rf.currentTerm, grantVotes, len(rf.peers),
 							)
 							rf.convertTo(Leader)
-							rf.broadcastHeartBeat()
+							rf.broadcastAppendEntries(true)
 							// Once a candidate wins an election, it becomes leader.
 							// It then sends heartbeat messages to all of the other servers
 							// to establish its authority and prevent new elections.
@@ -651,7 +691,7 @@ func (rf *Raft) ticker() {
 		case <-rf.heartBeatTimer.C:
 			rf.mu.Lock()
 			if rf.isLeader() {
-				rf.broadcastHeartBeat()
+				rf.broadcastAppendEntries(true)
 				rf.heartBeatTimer.Reset(heartBeatInterval())
 			}
 			rf.mu.Unlock()
@@ -663,5 +703,33 @@ func (rf *Raft) ticker() {
 				rf.mu.Unlock()
 			}
 		}
+	}
+}
+
+func (rf *Raft) applier() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		for rf.lastApplied >= rf.commitIndex {
+			Debug(dCommit, "S%d Waiting for commitIndex to be updated (%d/%d)", rf.me, rf.lastApplied, rf.commitIndex)
+			rf.applyCond.Wait()
+		}
+
+		// If commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
+		commitIndex, lastApplied := rf.commitIndex, rf.lastApplied
+		entries := make([]Entry, commitIndex-lastApplied)
+		copy(entries, rf.logs[lastApplied+1:commitIndex+1])
+		rf.mu.Unlock()
+
+		for _, entry := range entries {
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: entry.Index,
+			}
+		}
+
+		rf.mu.Lock()
+		rf.lastApplied = commitIndex
+		rf.mu.Unlock()
 	}
 }
