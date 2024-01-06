@@ -71,8 +71,14 @@ type AppendEntriesReply struct {
 	// Success means whether follower contained entry
 	// matching prevLogIndex and prevLogTerm.
 	Success bool
+	// ConflictTerm is the term of the conflicting entry.
+	// -1 means there is no entry in given index.
+	ConflictTerm Term
+	// ConflictIndex is the first index it stores for ConflictTerm.
+	ConflictIndex int
 }
 
 func (r *AppendEntriesReply) String() string {
-	return fmt.Sprintf("Reply(Success = %v with T%d)", r.Success, r.Term)
+	return fmt.Sprintf("Reply(Success = %v, CT = %d, CI = %d with T%d)",
+		r.Success, r.ConflictTerm, r.ConflictIndex, r.Term)
 }

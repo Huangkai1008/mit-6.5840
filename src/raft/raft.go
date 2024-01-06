@@ -93,7 +93,7 @@ type Entry struct {
 }
 
 func (entry Entry) String() string {
-	return fmt.Sprintf("Entry(Index = %d, Term = %d)", entry.Index, entry.Term)
+	return fmt.Sprintf("Index = %d, Term = %d, Command = %v)", entry.Index, entry.Term, entry.Command)
 }
 
 // Raft is a Go object implementing a single Raft peer.
@@ -306,16 +306,6 @@ func (rf *Raft) getLastLogEntry() Entry {
 	return rf.logs[len(rf.logs)-1]
 }
 
-// match returns whether the follower finds an entry in its log
-// with the same index and term.
-//
-// According to the `Log Matching Property`:
-// if two logs contain an entry with the same index and term,
-// then the logs are identical in all entries up through the given index.
-func (rf *Raft) match(logIndex, logTerm int) bool {
-	return logIndex <= rf.getLastLogEntry().Index && rf.logs[logIndex].Term == logTerm
-}
-
 // If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
 // and log[N].term == currentTerm: set commitIndex = N (§5.3, §5.4)
 func (rf *Raft) advanceCommitForLeader() {
@@ -376,6 +366,89 @@ func (rf *Raft) isUpToDate(logIndex int, term Term) bool {
 	return term > lastLogEntry.Term || (term == lastLogEntry.Term && logIndex >= lastLogEntry.Index)
 }
 
+// match returns whether the follower finds an entry in its log
+// with the same index and term.
+//
+// According to the `Log Matching Property`:
+// if two logs contain an entry with the same index and term,
+// then the logs are identical in all entries up through the given index.
+func (rf *Raft) match(logIndex, logTerm int) bool {
+	return logIndex <= rf.getLastLogEntry().Index && rf.logs[logIndex].Term == logTerm
+}
+
+func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest, reply *AppendEntriesReply) {
+	// If the reply is outdated, ignore it.
+	if !rf.isLeader() || rf.currentTerm != request.Term {
+		return
+	}
+
+	if reply.Success {
+		rf.matchIndex[peer] = request.PrevLogIndex + len(request.Entries)
+		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+		rf.advanceCommitForLeader()
+		return
+	}
+
+	if rf.currentTerm < reply.Term {
+		rf.updateTerm(reply.Term)
+		rf.convertTo(Follower)
+	} else if rf.currentTerm == reply.Term {
+		rf.nextIndex[peer] = reply.ConflictIndex
+		if reply.ConflictTerm != -1 {
+			for index := request.PrevLogIndex; index >= 0; index-- {
+				if rf.logs[index].Term == reply.ConflictTerm {
+					rf.nextIndex[peer] = index + 1
+					break
+				}
+			}
+		}
+	}
+}
+
+// broadcastAppendEntries sends AppendEntries RPCs in parallel to each of the other servers to replicate the entry.
+//
+// It is also used as heartbeat.
+// TODO: replicate in batch
+func (rf *Raft) broadcastAppendEntries(isHeartBeat bool) {
+	if isHeartBeat {
+		Debug(dTimer, "S%d Leader, sending heartbeat.", rf.me)
+	} else {
+		Debug(dTimer, "S%d Leader, replicating entries.", rf.me)
+	}
+
+	for peer := range rf.peers {
+		if rf.isMe(peer) {
+			continue
+		}
+
+		go func(peer int) {
+			rf.mu.RLock()
+			if !rf.isLeader() {
+				rf.mu.RUnlock()
+				return
+			}
+
+			prevLogIndex := rf.nextIndex[peer] - 1
+			request := rf.newAppendEntriesRequest(prevLogIndex)
+			rf.mu.RUnlock()
+
+			reply := new(AppendEntriesReply)
+			Debug(
+				dLog, "S%d -> S%d, AE: %v", rf.me, peer, request,
+			)
+
+			if rf.sendAppendEntries(peer, request, reply) {
+				Debug(dLog, "S%d <- S%d, AE: %v", rf.me, peer, reply)
+
+				rf.mu.Lock()
+				rf.handleAppendEntriesReply(peer, request, reply)
+				rf.mu.Unlock()
+			}
+
+		}(peer)
+	}
+}
+
 // AppendEntries RPC handler
 //
 // Which is invoked by leader to replicate log entries (§5.3); also used as heartbeat (§5.2).
@@ -407,7 +480,19 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	// If the follower does not find an entry in its log with the same index and term,
 	// then it refuses the new entries.
 	if !rf.match(request.PrevLogIndex, request.PrevLogTerm) {
-		// TODO: include the term of the conflicting entry and the first index it stores for that term
+		lastIndex := rf.getLastLogEntry().Index
+		if lastIndex < request.PrevLogIndex {
+			reply.ConflictTerm = -1
+			reply.ConflictIndex = lastIndex + 1
+		} else {
+			reply.ConflictTerm = rf.logs[request.PrevLogIndex].Term
+			index := request.PrevLogIndex - 1
+			for index >= 0 && rf.logs[index].Term == reply.ConflictTerm {
+				index--
+			}
+			reply.ConflictIndex = index
+		}
+
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -431,64 +516,6 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	Debug(dTimer, "S%d received S%d heartbeat at T%d", rf.me, request.LeaderId, rf.currentTerm)
-}
-
-func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest, reply *AppendEntriesReply) {
-	// If the reply is outdated, ignore it.
-	if !rf.isLeader() || rf.currentTerm != request.Term {
-		return
-	}
-
-	if reply.Success {
-		rf.matchIndex[peer] = request.PrevLogIndex + len(request.Entries)
-		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
-		rf.advanceCommitForLeader()
-		return
-	}
-
-	if rf.currentTerm < reply.Term {
-		rf.updateTerm(reply.Term)
-		rf.convertTo(Follower)
-	} else if rf.currentTerm == reply.Term {
-		// TODO: use conflict index
-		rf.nextIndex[peer] -= 1
-	}
-}
-
-// broadcastAppendEntries sends AppendEntries RPCs in parallel to each of the other servers to replicate the entry.
-//
-// It is also used as heartbeat.
-// TODO: replicate in batch
-func (rf *Raft) broadcastAppendEntries(isHeartBeat bool) {
-	if isHeartBeat {
-		Debug(dTimer, "S%d Leader, sending heartbeat.", rf.me)
-	} else {
-		Debug(dTimer, "S%d Leader, replicating entries.", rf.me)
-	}
-
-	for peer := range rf.peers {
-		if rf.isMe(peer) {
-			continue
-		}
-
-		go func(peer int) {
-			prevLogIndex := rf.nextIndex[peer] - 1
-			request := rf.newAppendEntriesRequest(prevLogIndex)
-			reply := new(AppendEntriesReply)
-			Debug(
-				dLog, "S%d -> S%d, AE: %v", rf.me, peer, request,
-			)
-
-			if rf.sendAppendEntries(peer, request, reply) {
-				Debug(dLog, "S%d <- S%d, AE: %v", rf.me, peer, reply)
-
-				rf.mu.Lock()
-				rf.handleAppendEntriesReply(peer, request, reply)
-				rf.mu.Unlock()
-			}
-
-		}(peer)
-	}
 }
 
 func (rf *Raft) newRequestVoteRequest() *RequestVoteRequest {
@@ -574,7 +601,7 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 	// The voter denies its vote if its own log is more up-to-date than
 	// that of the candidate.
 	if !rf.isUpToDate(request.LastLogIndex, request.LastLogTerm) {
-		Debug(dLog2, "S%d Reject S%d vote", rf.me, request.CandidateId)
+		Debug(dLog2, "S%d Reject S%d vote, not up-to-update", rf.me, request.CandidateId)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		return
@@ -622,6 +649,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	entry := rf.appendNewEntry(command)
+	Debug(dClient, "S%d received command %v", rf.me, entry)
 	rf.matchIndex[rf.me], rf.nextIndex[rf.me] = entry.Index, entry.Index+1
 	rf.broadcastAppendEntries(false)
 	return entry.Index, entry.Term, true
