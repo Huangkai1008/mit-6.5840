@@ -227,7 +227,7 @@ func (rf *Raft) convertTo(state State) {
 
 	switch rf.state {
 	case Follower:
-		Debug(dTimer, "S%d I'm follower, pausing HBT")
+		Debug(dTimer, "S%d I'm follower, pausing HBT", rf.me)
 		rf.heartBeatTimer.Stop()
 		rf.electionTimer.Reset(electionTimeout())
 	case Candidate:
@@ -354,7 +354,7 @@ func (rf *Raft) newAppendEntriesRequest(prevLogIndex int) *AppendEntriesRequest 
 		LeaderId:     rf.me,
 		PrevLogIndex: prevLogIndex,
 		PrevLogTerm:  rf.logs[prevLogIndex].Term,
-		Entries:      make([]Entry, 0),
+		Entries:      entries,
 		LeaderCommit: rf.commitIndex,
 	}
 }
@@ -577,6 +577,7 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 		Debug(dLog2, "S%d Reject S%d vote", rf.me, request.CandidateId)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
+		return
 	}
 
 	rf.convertTo(Follower)
@@ -658,7 +659,7 @@ func (rf *Raft) startElection() {
 	rf.currentTerm++
 	rf.voteFor = rf.me
 
-	Debug(dTimer, "S%d Resetting election timeout because election")
+	Debug(dTimer, "S%d Resetting election timeout because election", rf.me)
 	rf.electionTimer.Reset(electionTimeout())
 	grantVotes := 1
 
@@ -720,7 +721,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Unlock()
 		case <-rf.electionTimer.C:
 			if !rf.isLeader() {
-				Debug(dTimer, "S%d Not Leader, checking election timeout")
+				Debug(dTimer, "S%d Not Leader, checking election timeout", rf.me)
 				rf.mu.Lock()
 				rf.startElection()
 				rf.mu.Unlock()
