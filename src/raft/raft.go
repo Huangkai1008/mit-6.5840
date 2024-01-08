@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"6.5840/labgob"
+	"bytes"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -250,6 +252,15 @@ func (rf *Raft) updateTerm(term Term) {
 	rf.voteFor = -1
 }
 
+func (rf *Raft) encodeRaftState() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(rf.currentTerm) != nil || e.Encode(rf.voteFor) != nil || e.Encode(rf.logs) != nil {
+		Debug(dError, "S% Persist state failed", rf.me)
+	}
+	return w.Bytes()
+}
+
 // save the Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
@@ -258,6 +269,9 @@ func (rf *Raft) updateTerm(term Term) {
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
+	raftState := rf.encodeRaftState()
+	rf.persister.Save(raftState, nil)
+
 	// Your code here (2C).
 	// Example:
 	// w := new(bytes.Buffer)
@@ -273,6 +287,20 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm Term
+	var voteFor int
+	var logs []Entry
+	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
+		Debug(dError, "S% Restores persisted state failed", rf.me)
+	} else {
+		rf.currentTerm = currentTerm
+		rf.voteFor = voteFor
+		rf.logs = logs
+	}
+
 	// Your code here (2C).
 	// Example:
 	// r := bytes.NewBuffer(data)
@@ -727,8 +755,7 @@ func (rf *Raft) startElection() {
 							// to establish its authority and prevent new elections.
 						}
 					} else if rf.currentTerm < reply.Term {
-						rf.currentTerm = reply.Term
-						rf.voteFor = -1
+						rf.updateTerm(reply.Term)
 						rf.convertTo(Follower)
 					}
 				}
