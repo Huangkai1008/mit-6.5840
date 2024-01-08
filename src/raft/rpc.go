@@ -82,3 +82,36 @@ func (r *AppendEntriesReply) String() string {
 	return fmt.Sprintf("Reply(Success = %v, CT = %d, CI = %d with T%d)",
 		r.Success, r.ConflictTerm, r.ConflictIndex, r.Term)
 }
+
+// InstallSnapshotRequest is the `InstallSnapshot` RPC request structure.
+type InstallSnapshotRequest struct {
+	// The leader's Term
+	Term Term
+	// LeaderId is provided so follower can redirect clients
+	LeaderId int
+	// The snapshot replaces all entries up through and including LastIncludedIndex
+	LastIncludedIndex int
+	// The term of lastIncludedIndex
+	LastIncludedTerm Term
+	// Byte offset where chunk is positioned in the snapshot file
+	Offset int
+	// Raw bytes of the snapshot chunk, starting at offset
+	Data []byte
+	// Returns true if it is the last chuck
+	Done bool
+}
+
+func (r *InstallSnapshotRequest) String() string {
+	// TODO: Fill it
+	return fmt.Sprintf("Request()")
+}
+
+// InstallSnapshotReply is the `InstallSnapshot` RPC reply structure.
+type InstallSnapshotReply struct {
+	// CurrentTerm, for leader to update itself
+	Term Term
+}
+
+func (r *InstallSnapshotReply) String() string {
+	return fmt.Sprintf("Reply(Term = %d)", r.Term)
+}

@@ -316,15 +316,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
-}
-
 // the first entry is a dummy entry, which index is 0, term is 0.
 func (rf *Raft) getFirstLogEntry() Entry {
 	return rf.logs[0]
@@ -678,9 +669,28 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	entry := rf.appendNewEntry(command)
 	Debug(dClient, "S%d received command %v", rf.me, entry)
+
 	rf.matchIndex[rf.me], rf.nextIndex[rf.me] = entry.Index, entry.Index+1
 	rf.broadcastAppendEntries(false)
 	return entry.Index, entry.Term, true
+}
+
+// Snapshot call with a serialized snapshot of its state.
+//
+// The service says it has created a snapshot that has
+// all info up to and including index.
+// This means the service no longer needs the log through (and including)
+// that index. Raft should now trim its log as much as possible.
+func (rf *Raft) Snapshot(index int, snapshot []byte) {
+	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	firstIndex := rf.getFirstLogEntry().Index
+	if index <= firstIndex {
+		
+	}
+
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
