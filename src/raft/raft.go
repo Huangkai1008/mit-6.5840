@@ -67,15 +67,32 @@ const (
 // Each Term begins with an election.
 type Term = int
 
-const HeartBeatInterval = 200 * time.Millisecond
+type lockedRand struct {
+	mu   sync.Mutex
+	rand *rand.Rand
+}
+
+func (r *lockedRand) Intn(n int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rand.Intn(n)
+}
+
+var globalRand = &lockedRand{
+	rand: rand.New(rand.NewSource(time.Now().UnixNano())),
+}
+
+const (
+	HeartBeatInterval = 125
+	ElectionTimeout   = 1000
+)
 
 func heartBeatInterval() time.Duration {
-	return HeartBeatInterval
+	return HeartBeatInterval * time.Millisecond
 }
 
 func electionTimeout() time.Duration {
-	ms := rand.Int63() % 500
-	return HeartBeatInterval*2 + time.Duration(ms)*time.Millisecond
+	return time.Duration(ElectionTimeout+globalRand.Intn(ElectionTimeout)) * time.Millisecond
 }
 
 func winMajority(grantVotes, allVotes int) bool {
@@ -818,7 +835,7 @@ func (rf *Raft) applier() {
 		}
 
 		rf.mu.Lock()
-		rf.lastApplied = commitIndex
+		rf.lastApplied = max(rf.lastApplied, commitIndex)
 		rf.mu.Unlock()
 	}
 }

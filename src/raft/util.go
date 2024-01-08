@@ -15,6 +15,13 @@ func min(a, b int) int {
 	return b
 }
 
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // Retrieve the verbosity level from an environment variable
 func getVerbosity() int {
 	v := os.Getenv("VERBOSE")
