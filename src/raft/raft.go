@@ -328,7 +328,8 @@ func (rf *Raft) getLastLogEntry() Entry {
 // if two logs contain an entry with the same index and term,
 // then the logs are identical in all entries up through the given index.
 func (rf *Raft) match(logIndex, logTerm int) bool {
-	return logIndex <= rf.getLastLogEntry().Index && rf.logs[logIndex].Term == logTerm
+	firstIndex := rf.getFirstLogEntry().Index
+	return logIndex <= rf.getLastLogEntry().Index && rf.logs[logIndex-firstIndex].Term == logTerm
 }
 
 // If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
@@ -523,14 +524,17 @@ func (rf *Raft) startElection() {
 }
 
 func (rf *Raft) newAppendEntriesRequest(prevLogIndex int) *AppendEntriesRequest {
-	entries := make([]Entry, len(rf.logs[prevLogIndex+1:]))
-	copy(entries, rf.logs[prevLogIndex+1:])
+	firstIndex := rf.getFirstLogEntry().Index
+	startIndex := prevLogIndex + 1 - firstIndex
+
+	entries := make([]Entry, len(rf.logs[startIndex:]))
+	copy(entries, rf.logs[startIndex:])
 
 	return &AppendEntriesRequest{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  rf.logs[prevLogIndex].Term,
+		PrevLogTerm:  rf.logs[prevLogIndex-firstIndex].Term,
 		Entries:      entries,
 		LeaderCommit: rf.commitIndex,
 	}
@@ -572,9 +576,10 @@ func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest
 		rf.persist()
 	} else if rf.currentTerm == reply.Term {
 		rf.nextIndex[peer] = reply.ConflictIndex
+		firstIndex := rf.getFirstLogEntry().Index
 		if reply.ConflictTerm != -1 {
 			for index := request.PrevLogIndex; index >= 0; index-- {
-				if rf.logs[index].Term == reply.ConflictTerm {
+				if rf.logs[index-firstIndex].Term == reply.ConflictTerm {
 					rf.nextIndex[peer] = index + 1
 					break
 				}
@@ -665,9 +670,10 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 			reply.ConflictTerm = -1
 			reply.ConflictIndex = lastIndex + 1
 		} else {
-			reply.ConflictTerm = rf.logs[request.PrevLogIndex].Term
+			firstIndex := rf.getFirstLogEntry().Index
+			reply.ConflictTerm = rf.logs[request.PrevLogIndex-firstIndex].Term
 			index := request.PrevLogIndex - 1
-			for index >= 0 && rf.logs[index].Term == reply.ConflictTerm {
+			for index >= 0 && rf.logs[index-firstIndex].Term == reply.ConflictTerm {
 				index--
 			}
 			reply.ConflictIndex = index
@@ -681,12 +687,13 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	// Replicate logs.
 	//
 	// Notes: If there are no conflicting logs, do not delete any follower logs, as follower logs may be more recent.
+	firstIndex := rf.getFirstLogEntry().Index
 	for index, entry := range request.Entries {
 		// Find the latest log entry where the two logs agree,
 		// delete any entries in the follower’s log after that point,
 		// and send the follower all of the leader’s entries after that point.
-		if entry.Index > rf.getLastLogEntry().Index || rf.logs[entry.Index].Term != entry.Term {
-			rf.logs = append(rf.logs[:entry.Index], request.Entries[index:]...)
+		if entry.Index > rf.getLastLogEntry().Index || rf.logs[entry.Index-firstIndex].Term != entry.Term {
+			rf.logs = append(rf.logs[:entry.Index-firstIndex], request.Entries[index:]...)
 			break
 		}
 	}
@@ -808,7 +815,8 @@ func (rf *Raft) applier() {
 		// If commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine.
 		commitIndex, lastApplied := rf.commitIndex, rf.lastApplied
 		entries := make([]Entry, commitIndex-lastApplied)
-		copy(entries, rf.logs[lastApplied+1:commitIndex+1])
+		firstIndex := rf.getFirstLogEntry().Index
+		copy(entries, rf.logs[lastApplied+1-firstIndex:commitIndex+1-firstIndex])
 		rf.mu.Unlock()
 
 		for _, entry := range entries {
