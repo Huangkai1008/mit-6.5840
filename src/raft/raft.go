@@ -360,67 +360,14 @@ func (rf *Raft) advanceCommitForFollower(leaderCommit int) {
 	}
 }
 
-// startElection invoked when election timeout elapses
-// without receiving AppendEntries RPC from
-// the current leader or granting vote to candidate.
-func (rf *Raft) startElection() {
-	// On conversion to candidate, start election:
-	// • Increment currentTerm
-	// • Vote for self
-	// • Reset election timer
-	// • Send RequestVote RPCs to all other servers
-	rf.convertTo(Candidate)
-	rf.currentTerm++
-	rf.voteFor = rf.me
-	rf.persist()
+func (rf *Raft) newRequestVoteRequest() *RequestVoteRequest {
+	lastLogEntry := rf.getLastLogEntry()
 
-	Debug(dTimer, "S%d Resetting election timeout because election", rf.me)
-	rf.electionTimer.Reset(electionTimeout())
-	grantVotes := 1
-
-	Debug(dTerm, "S%d Converting to Candidate, calling election in T%d", rf.me, rf.currentTerm)
-
-	request := rf.newRequestVoteRequest()
-
-	for peer := range rf.peers {
-		if rf.isMe(peer) {
-			continue
-		}
-
-		go func(peer int) {
-			reply := new(RequestVoteReply)
-			Debug(dLog, "S%d -> S%d, RV: %v", rf.me, peer, request)
-
-			if rf.sendRequestVote(peer, request, reply) {
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
-
-				Debug(dLog, "S%d <- S%d, RV: %v", rf.me, peer, reply)
-
-				if rf.currentTerm == request.Term && rf.state == Candidate {
-					if reply.VoteGranted {
-						Debug(dVote, "S%d <- S%d Got vote", rf.me, peer)
-
-						grantVotes++
-						if winMajority(grantVotes, len(rf.peers)) {
-							Debug(
-								dLeader, "S%d Achieved Majority for T%d (%d/%d), converting to Leader",
-								rf.me, rf.currentTerm, grantVotes, len(rf.peers),
-							)
-							rf.convertTo(Leader)
-							rf.broadcastAppendEntries(true)
-							// Once a candidate wins an election, it becomes leader.
-							// It then sends heartbeat messages to all of the other servers
-							// to establish its authority and prevent new elections.
-						}
-					} else if rf.currentTerm < reply.Term {
-						rf.updateTerm(reply.Term)
-						rf.convertTo(Follower)
-						rf.persist()
-					}
-				}
-			}
-		}(peer)
+	return &RequestVoteRequest{
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: lastLogEntry.Index,
+		LastLogTerm:  lastLogEntry.Term,
 	}
 }
 
@@ -509,6 +456,70 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = true
 	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
+}
+
+// startElection invoked when election timeout elapses
+// without receiving AppendEntries RPC from
+// the current leader or granting vote to candidate.
+func (rf *Raft) startElection() {
+	// On conversion to candidate, start election:
+	// • Increment currentTerm
+	// • Vote for self
+	// • Reset election timer
+	// • Send RequestVote RPCs to all other servers
+	rf.convertTo(Candidate)
+	rf.currentTerm++
+	rf.voteFor = rf.me
+	rf.persist()
+
+	Debug(dTimer, "S%d Resetting election timeout because election", rf.me)
+	rf.electionTimer.Reset(electionTimeout())
+	grantVotes := 1
+
+	Debug(dTerm, "S%d Converting to Candidate, calling election in T%d", rf.me, rf.currentTerm)
+
+	request := rf.newRequestVoteRequest()
+
+	for peer := range rf.peers {
+		if rf.isMe(peer) {
+			continue
+		}
+
+		go func(peer int) {
+			reply := new(RequestVoteReply)
+			Debug(dLog, "S%d -> S%d, RV: %v", rf.me, peer, request)
+
+			if rf.sendRequestVote(peer, request, reply) {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+
+				Debug(dLog, "S%d <- S%d, RV: %v", rf.me, peer, reply)
+
+				if rf.currentTerm == request.Term && rf.state == Candidate {
+					if reply.VoteGranted {
+						Debug(dVote, "S%d <- S%d Got vote", rf.me, peer)
+
+						grantVotes++
+						if winMajority(grantVotes, len(rf.peers)) {
+							Debug(
+								dLeader, "S%d Achieved Majority for T%d (%d/%d), converting to Leader",
+								rf.me, rf.currentTerm, grantVotes, len(rf.peers),
+							)
+							rf.convertTo(Leader)
+							rf.broadcastAppendEntries(true)
+							// Once a candidate wins an election, it becomes leader.
+							// It then sends heartbeat messages to all of the other servers
+							// to establish its authority and prevent new elections.
+						}
+					} else if rf.currentTerm < reply.Term {
+						rf.updateTerm(reply.Term)
+						rf.convertTo(Follower)
+						rf.persist()
+					}
+				}
+			}
+		}(peer)
+	}
 }
 
 func (rf *Raft) newAppendEntriesRequest(prevLogIndex int) *AppendEntriesRequest {
@@ -607,11 +618,12 @@ func (rf *Raft) broadcastAppendEntries(isHeartBeat bool) {
 			if rf.sendAppendEntries(peer, request, reply) {
 				Debug(dLog, "S%d <- S%d, AE: %v", rf.me, peer, reply)
 
-				rf.mu.Lock()
-				rf.handleAppendEntriesReply(peer, request, reply)
-				rf.mu.Unlock()
+				if rf.currentTerm == request.Term && rf.isLeader() {
+					rf.mu.Lock()
+					rf.handleAppendEntriesReply(peer, request, reply)
+					rf.mu.Unlock()
+				}
 			}
-
 		}(peer)
 	}
 }
@@ -684,17 +696,6 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	Debug(dTimer, "S%d received S%d heartbeat at T%d", rf.me, request.LeaderId, rf.currentTerm)
-}
-
-func (rf *Raft) newRequestVoteRequest() *RequestVoteRequest {
-	lastLogEntry := rf.getLastLogEntry()
-
-	return &RequestVoteRequest{
-		Term:         rf.currentTerm,
-		CandidateId:  rf.me,
-		LastLogIndex: lastLogEntry.Index,
-		LastLogTerm:  lastLogEntry.Term,
-	}
 }
 
 func (rf *Raft) appendNewEntry(command interface{}) Entry {
