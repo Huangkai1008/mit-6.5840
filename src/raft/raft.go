@@ -31,27 +31,6 @@ import (
 	"6.5840/labrpc"
 )
 
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in part 2D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
-type ApplyMsg struct {
-	CommandValid bool
-	Command      interface{}
-	CommandIndex int
-
-	// For 2D:
-	SnapshotValid bool
-	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
-}
-
 // State is the raft state.
 type State uint8
 
@@ -97,6 +76,29 @@ func electionTimeout() time.Duration {
 
 func winMajority(grantVotes, allVotes int) bool {
 	return grantVotes > allVotes/2
+}
+
+// ApplyMsg is the structure which service or tester received from Raft.
+//
+// As each Raft peer becomes aware that successive log entries are
+// committed, the peer should send an ApplyMsg to the service (or
+// tester) on the same server, via the applyCh passed to Make(). set
+// CommandValid to true to indicate that the ApplyMsg contains a newly
+// committed log entry.
+//
+// in part 2D you'll want to send other kinds of messages (e.g.,
+// snapshots) on the applyCh, but set CommandValid to false for these
+// other uses.
+type ApplyMsg struct {
+	CommandValid bool
+	Command      interface{}
+	CommandIndex int
+
+	// For 2D:
+	SnapshotValid bool
+	Snapshot      []byte
+	SnapshotTerm  int
+	SnapshotIndex int
 }
 
 // Entry contains the Term in which it was created (the number in each box)
@@ -288,15 +290,6 @@ func (rf *Raft) encodeRaftState() []byte {
 func (rf *Raft) persist() {
 	raftState := rf.encodeRaftState()
 	rf.persister.Save(raftState, nil)
-
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftState := w.Bytes()
-	// rf.persister.Save(raftState, nil)
 }
 
 // restore previously persisted state.
@@ -317,20 +310,6 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.voteFor = voteFor
 		rf.logs = logs
 	}
-
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
 }
 
 // the first entry is a dummy entry, which index is 0, term is 0.
@@ -340,6 +319,16 @@ func (rf *Raft) getFirstLogEntry() Entry {
 
 func (rf *Raft) getLastLogEntry() Entry {
 	return rf.logs[len(rf.logs)-1]
+}
+
+// match returns whether the follower finds an entry in its log
+// with the same index and term.
+//
+// According to the `Log Matching Property`:
+// if two logs contain an entry with the same index and term,
+// then the logs are identical in all entries up through the given index.
+func (rf *Raft) match(logIndex, logTerm int) bool {
+	return logIndex <= rf.getLastLogEntry().Index && rf.logs[logIndex].Term == logTerm
 }
 
 // If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
@@ -371,6 +360,157 @@ func (rf *Raft) advanceCommitForFollower(leaderCommit int) {
 	}
 }
 
+// startElection invoked when election timeout elapses
+// without receiving AppendEntries RPC from
+// the current leader or granting vote to candidate.
+func (rf *Raft) startElection() {
+	// On conversion to candidate, start election:
+	// • Increment currentTerm
+	// • Vote for self
+	// • Reset election timer
+	// • Send RequestVote RPCs to all other servers
+	rf.convertTo(Candidate)
+	rf.currentTerm++
+	rf.voteFor = rf.me
+	rf.persist()
+
+	Debug(dTimer, "S%d Resetting election timeout because election", rf.me)
+	rf.electionTimer.Reset(electionTimeout())
+	grantVotes := 1
+
+	Debug(dTerm, "S%d Converting to Candidate, calling election in T%d", rf.me, rf.currentTerm)
+
+	request := rf.newRequestVoteRequest()
+
+	for peer := range rf.peers {
+		if rf.isMe(peer) {
+			continue
+		}
+
+		go func(peer int) {
+			reply := new(RequestVoteReply)
+			Debug(dLog, "S%d -> S%d, RV: %v", rf.me, peer, request)
+
+			if rf.sendRequestVote(peer, request, reply) {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+
+				Debug(dLog, "S%d <- S%d, RV: %v", rf.me, peer, reply)
+
+				if rf.currentTerm == request.Term && rf.state == Candidate {
+					if reply.VoteGranted {
+						Debug(dVote, "S%d <- S%d Got vote", rf.me, peer)
+
+						grantVotes++
+						if winMajority(grantVotes, len(rf.peers)) {
+							Debug(
+								dLeader, "S%d Achieved Majority for T%d (%d/%d), converting to Leader",
+								rf.me, rf.currentTerm, grantVotes, len(rf.peers),
+							)
+							rf.convertTo(Leader)
+							rf.broadcastAppendEntries(true)
+							// Once a candidate wins an election, it becomes leader.
+							// It then sends heartbeat messages to all of the other servers
+							// to establish its authority and prevent new elections.
+						}
+					} else if rf.currentTerm < reply.Term {
+						rf.updateTerm(reply.Term)
+						rf.convertTo(Follower)
+						rf.persist()
+					}
+				}
+			}
+		}(peer)
+	}
+}
+
+// example code to send a RequestVote RPC to a server.
+// server is the index of the target server in rf.peers[].
+// expects RPC arguments in args.
+// fills in *reply with RPC reply, so caller should
+// pass &reply.
+// the types of the args and reply passed to Call() must be
+// the same as the types of the arguments declared in the
+// handler function (including whether they are pointers).
+//
+// The labrpc package simulates a lossy network, in which servers
+// may be unreachable, and in which requests and replies may be lost.
+// Call() sends a request and waits for a reply. If a reply arrives
+// within a timeout interval, Call() returns true; otherwise
+// Call() returns false. Thus Call() may not return for a while.
+// A false return can be caused by a dead server, a live server that
+// can't be reached, a lost request, or a lost reply.
+//
+// Call() is guaranteed to return (perhaps after a delay) *except* if the
+// handler function on the server side does not return.  Thus, there
+// is no need to implement your own timeouts around Call().
+//
+// look at the comments in ../labrpc/labrpc.go for more details.
+//
+// if you're having trouble getting RPC to work, check that you've
+// capitalized all field names in structs passed over RPC, and
+// that the caller passes the address of the reply struct with &, not
+// the struct itself.
+func (rf *Raft) sendRequestVote(server int, request *RequestVoteRequest, reply *RequestVoteReply) bool {
+	ok := rf.peers[server].Call("Raft.RequestVote", request, reply)
+	return ok
+}
+
+// RequestVote RPC handler,
+//
+// which is invoked by candidates to gather votes.
+func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply) {
+	// Your code here (2A, 2B).
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// If the candidate's Term is smaller than the current Term,
+	// reject the vote and return the current Term.
+	if request.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	// Each server will vote for at most one candidate in a given term, on a first-come-first-served basis.
+	if request.Term == rf.currentTerm && rf.voteFor != -1 && rf.voteFor != request.CandidateId {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	// If RPC request or response contains Term T > currentTerm:
+	// set currentTerm = T, convert to follower.
+	if request.Term > rf.currentTerm {
+		Debug(
+			dTerm, "S%d Term is higher than S%d, updating (%d > %d)",
+			request.CandidateId, rf.me, request.Term, rf.currentTerm,
+		)
+
+		rf.updateTerm(request.Term)
+		rf.persist()
+	}
+
+	// Election restriction (§5.4.1)
+	//
+	// The voter denies its vote if its own log is more up-to-date than
+	// that of the candidate.
+	if !rf.isUpToDate(request.LastLogIndex, request.LastLogTerm) {
+		Debug(dLog2, "S%d Reject S%d vote, not up-to-update", rf.me, request.CandidateId)
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	rf.convertTo(Follower)
+	rf.voteFor = request.CandidateId
+	rf.persist()
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = true
+	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
+}
+
 func (rf *Raft) newAppendEntriesRequest(prevLogIndex int) *AppendEntriesRequest {
 	entries := make([]Entry, len(rf.logs[prevLogIndex+1:]))
 	copy(entries, rf.logs[prevLogIndex+1:])
@@ -400,16 +540,6 @@ func (rf *Raft) sendAppendEntries(peer int, request *AppendEntriesRequest, reply
 func (rf *Raft) isUpToDate(logIndex int, term Term) bool {
 	lastLogEntry := rf.getLastLogEntry()
 	return term > lastLogEntry.Term || (term == lastLogEntry.Term && logIndex >= lastLogEntry.Index)
-}
-
-// match returns whether the follower finds an entry in its log
-// with the same index and term.
-//
-// According to the `Log Matching Property`:
-// if two logs contain an entry with the same index and term,
-// then the logs are identical in all entries up through the given index.
-func (rf *Raft) match(logIndex, logTerm int) bool {
-	return logIndex <= rf.getLastLogEntry().Index && rf.logs[logIndex].Term == logTerm
 }
 
 func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest, reply *AppendEntriesReply) {
@@ -567,93 +697,6 @@ func (rf *Raft) newRequestVoteRequest() *RequestVoteRequest {
 	}
 }
 
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus, there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) sendRequestVote(server int, request *RequestVoteRequest, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", request, reply)
-	return ok
-}
-
-// RequestVote RPC handler,
-//
-// which is invoked by candidates to gather votes.
-func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	// If the candidate's Term is smaller than the current Term,
-	// reject the vote and return the current Term.
-	if request.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
-
-	// Each server will vote for at most one candidate in a given term, on a first-come-first-served basis.
-	if request.Term == rf.currentTerm && rf.voteFor != -1 && rf.voteFor != request.CandidateId {
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
-
-	// If RPC request or response contains Term T > currentTerm:
-	// set currentTerm = T, convert to follower.
-	if request.Term > rf.currentTerm {
-		Debug(
-			dTerm, "S%d Term is higher than S%d, updating (%d > %d)",
-			request.CandidateId, rf.me, request.Term, rf.currentTerm,
-		)
-
-		rf.updateTerm(request.Term)
-		rf.persist()
-	}
-
-	// Election restriction (§5.4.1)
-	//
-	// The voter denies its vote if its own log is more up-to-date than
-	// that of the candidate.
-	if !rf.isUpToDate(request.LastLogIndex, request.LastLogTerm) {
-		Debug(dLog2, "S%d Reject S%d vote, not up-to-update", rf.me, request.CandidateId)
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
-
-	rf.convertTo(Follower)
-	rf.voteFor = request.CandidateId
-	rf.persist()
-	reply.Term = rf.currentTerm
-	reply.VoteGranted = true
-	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
-}
-
 func (rf *Raft) appendNewEntry(command interface{}) Entry {
 	lastLogEntry := rf.getLastLogEntry()
 	entry := Entry{
@@ -712,7 +755,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	if index <= firstIndex {
 
 	}
-
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -733,71 +775,6 @@ func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }
-
-// startElection invoked when election timeout elapses
-// without receiving AppendEntries RPC from
-// the current leader or granting vote to candidate.
-func (rf *Raft) startElection() {
-	// On conversion to candidate, start election:
-	// • Increment currentTerm
-	// • Vote for self
-	// • Reset election timer
-	// • Send RequestVote RPCs to all other servers
-	rf.convertTo(Candidate)
-	rf.currentTerm++
-	rf.voteFor = rf.me
-	rf.persist()
-
-	Debug(dTimer, "S%d Resetting election timeout because election", rf.me)
-	rf.electionTimer.Reset(electionTimeout())
-	grantVotes := 1
-
-	Debug(dTerm, "S%d Converting to Candidate, calling election in T%d", rf.me, rf.currentTerm)
-
-	request := rf.newRequestVoteRequest()
-
-	for peer := range rf.peers {
-		if rf.isMe(peer) {
-			continue
-		}
-
-		go func(peer int) {
-			reply := new(RequestVoteReply)
-			Debug(dLog, "S%d -> S%d, RV: %v", rf.me, peer, request)
-
-			if rf.sendRequestVote(peer, request, reply) {
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
-
-				Debug(dLog, "S%d <- S%d, RV: %v", rf.me, peer, reply)
-
-				if rf.currentTerm == request.Term && rf.state == Candidate {
-					if reply.VoteGranted {
-						Debug(dVote, "S%d <- S%d Got vote", rf.me, peer)
-
-						grantVotes++
-						if winMajority(grantVotes, len(rf.peers)) {
-							Debug(
-								dLeader, "S%d Achieved Majority for T%d (%d/%d), converting to Leader",
-								rf.me, rf.currentTerm, grantVotes, len(rf.peers),
-							)
-							rf.convertTo(Leader)
-							rf.broadcastAppendEntries(true)
-							// Once a candidate wins an election, it becomes leader.
-							// It then sends heartbeat messages to all of the other servers
-							// to establish its authority and prevent new elections.
-						}
-					} else if rf.currentTerm < reply.Term {
-						rf.updateTerm(reply.Term)
-						rf.convertTo(Follower)
-						rf.persist()
-					}
-				}
-			}
-		}(peer)
-	}
-}
-
 func (rf *Raft) ticker() {
 	for !rf.killed() {
 		select {
