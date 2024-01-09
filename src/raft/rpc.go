@@ -102,8 +102,9 @@ type InstallSnapshotRequest struct {
 }
 
 func (r *InstallSnapshotRequest) String() string {
-	// TODO: Fill it
-	return fmt.Sprintf("Request()")
+	return fmt.Sprintf("Request(Term = %d, LeaderId = %d, LLI = %d, LLT = %d)",
+		r.Term, r.LeaderId, r.LastIncludedIndex, r.LastIncludedTerm)
+
 }
 
 // InstallSnapshotReply is the `InstallSnapshot` RPC reply structure.

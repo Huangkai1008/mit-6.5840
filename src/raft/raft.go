@@ -114,7 +114,7 @@ type Entry struct {
 }
 
 func (entry Entry) String() string {
-	return fmt.Sprintf("Index = %d, Term = %d, Command = %v)", entry.Index, entry.Term, entry.Command)
+	return fmt.Sprintf("(Index = %d, Term = %d, Command = %v)", entry.Index, entry.Term, entry.Command)
 }
 
 // Raft is a Go object implementing a single Raft peer.
@@ -289,7 +289,7 @@ func (rf *Raft) encodeRaftState() []byte {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	raftState := rf.encodeRaftState()
-	rf.persister.Save(raftState, nil)
+	rf.persister.Save(raftState, rf.persister.ReadSnapshot())
 }
 
 // restore previously persisted state.
@@ -309,6 +309,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.currentTerm = currentTerm
 		rf.voteFor = voteFor
 		rf.logs = logs
+		rf.lastApplied, rf.commitIndex = rf.logs[0].Index, rf.logs[0].Index
 	}
 }
 
@@ -704,6 +705,10 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 
 	rf.convertTo(Follower)
 
+	if request.PrevLogIndex < rf.getFirstLogEntry().Index {
+		return
+	}
+
 	// If the follower does not find an entry in its log with the same index and term,
 	// then it refuses the new entries.
 	if !rf.match(request.PrevLogIndex, request.PrevLogTerm) {
@@ -767,9 +772,10 @@ func (rf *Raft) InstallSnapshot(request *InstallSnapshotRequest, reply *InstallS
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	reply.Term = rf.currentTerm
+
 	// Reply immediately if term < currentTerm.
 	if request.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
 		return
 	}
 
@@ -785,9 +791,19 @@ func (rf *Raft) InstallSnapshot(request *InstallSnapshotRequest, reply *InstallS
 		return
 	}
 
+	if request.LastIncludedIndex > rf.getLastLogEntry().Index {
+		rf.logs = make([]Entry, 1)
+	} else {
+		rf.logs = rf.shrinkEntries(rf.logs[request.LastIncludedIndex-rf.getFirstLogEntry().Index:])
+		rf.logs[0].Command = nil
+	}
+
+	rf.logs[0].Term, rf.logs[0].Index = request.LastIncludedTerm, request.LastIncludedIndex
+	if rf.lastApplied < request.LastIncludedIndex || rf.commitIndex < request.LastIncludedIndex {
+		rf.lastApplied, rf.commitIndex = request.LastIncludedIndex, request.LastIncludedIndex
+	}
 	go func() {
 		rf.applyCh <- ApplyMsg{
-			CommandValid:  false,
 			SnapshotValid: true,
 			Snapshot:      request.Data,
 			SnapshotTerm:  request.LastIncludedTerm,
@@ -917,6 +933,7 @@ func (rf *Raft) ticker() {
 	}
 }
 
+// TODO: fix out of order apply
 func (rf *Raft) applier() {
 	for !rf.killed() {
 		rf.mu.Lock()
@@ -938,10 +955,10 @@ func (rf *Raft) applier() {
 				Command:      entry.Command,
 				CommandIndex: entry.Index,
 			}
-		}
 
-		rf.mu.Lock()
-		rf.lastApplied = max(rf.lastApplied, commitIndex)
-		rf.mu.Unlock()
+			rf.mu.Lock()
+			rf.lastApplied = max(rf.lastApplied, commitIndex)
+			rf.mu.Unlock()
+		}
 	}
 }
