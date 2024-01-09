@@ -428,6 +428,7 @@ func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest
 	if rf.currentTerm < reply.Term {
 		rf.updateTerm(reply.Term)
 		rf.convertTo(Follower)
+		rf.persist()
 	} else if rf.currentTerm == reply.Term {
 		rf.nextIndex[peer] = reply.ConflictIndex
 		if reply.ConflictTerm != -1 {
@@ -491,6 +492,7 @@ func (rf *Raft) broadcastAppendEntries(isHeartBeat bool) {
 func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	// If a server receives a request with a stale term number,
 	// it rejects the request.
@@ -630,6 +632,7 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 		)
 
 		rf.updateTerm(request.Term)
+		rf.persist()
 	}
 
 	// Election restriction (§5.4.1)
@@ -645,6 +648,7 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 
 	rf.convertTo(Follower)
 	rf.voteFor = request.CandidateId
+	rf.persist()
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = true
 	Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, request.CandidateId, rf.currentTerm)
@@ -659,6 +663,7 @@ func (rf *Raft) appendNewEntry(command interface{}) Entry {
 	}
 
 	rf.logs = append(rf.logs, entry)
+	rf.persist()
 	return entry
 }
 
@@ -705,7 +710,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	firstIndex := rf.getFirstLogEntry().Index
 	if index <= firstIndex {
-		
+
 	}
 
 }
@@ -741,6 +746,7 @@ func (rf *Raft) startElection() {
 	rf.convertTo(Candidate)
 	rf.currentTerm++
 	rf.voteFor = rf.me
+	rf.persist()
 
 	Debug(dTimer, "S%d Resetting election timeout because election", rf.me)
 	rf.electionTimer.Reset(electionTimeout())
@@ -784,6 +790,7 @@ func (rf *Raft) startElection() {
 					} else if rf.currentTerm < reply.Term {
 						rf.updateTerm(reply.Term)
 						rf.convertTo(Follower)
+						rf.persist()
 					}
 				}
 			}
