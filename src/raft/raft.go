@@ -463,8 +463,8 @@ func (rf *Raft) RequestVote(request *RequestVoteRequest, reply *RequestVoteReply
 	// set currentTerm = T, convert to follower.
 	if request.Term > rf.currentTerm {
 		Debug(
-			dTerm, "S%d Term is higher than S%d, updating (%d > %d)",
-			request.CandidateId, rf.me, request.Term, rf.currentTerm,
+			dTerm, "S%d Term is lower than S%d, updating (%d < %d)",
+			rf.me, request.CandidateId, rf.currentTerm, request.Term,
 		)
 
 		rf.updateTerm(request.Term)
@@ -770,12 +770,12 @@ func (rf *Raft) sendInstallSnapshot(peer int, request *InstallSnapshotRequest, r
 
 func (rf *Raft) InstallSnapshot(request *InstallSnapshotRequest, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
 
 	// Reply immediately if term < currentTerm.
 	if request.Term < rf.currentTerm {
+		rf.mu.Unlock()
 		return
 	}
 
@@ -788,6 +788,7 @@ func (rf *Raft) InstallSnapshot(request *InstallSnapshotRequest, reply *InstallS
 
 	// Received out-dated snapshot.
 	if request.LastIncludedIndex <= rf.commitIndex {
+		rf.mu.Unlock()
 		return
 	}
 
@@ -802,14 +803,15 @@ func (rf *Raft) InstallSnapshot(request *InstallSnapshotRequest, reply *InstallS
 	if rf.lastApplied < request.LastIncludedIndex || rf.commitIndex < request.LastIncludedIndex {
 		rf.lastApplied, rf.commitIndex = request.LastIncludedIndex, request.LastIncludedIndex
 	}
-	go func() {
-		rf.applyCh <- ApplyMsg{
-			SnapshotValid: true,
-			Snapshot:      request.Data,
-			SnapshotTerm:  request.LastIncludedTerm,
-			SnapshotIndex: request.LastIncludedIndex,
-		}
-	}()
+	rf.persister.Save(rf.encodeRaftState(), request.Data)
+	rf.mu.Unlock()
+
+	rf.applyCh <- ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      request.Data,
+		SnapshotTerm:  request.LastIncludedTerm,
+		SnapshotIndex: request.LastIncludedIndex,
+	}
 }
 
 func (rf *Raft) handleInstallSnapshotReply(peer int, request *InstallSnapshotRequest, reply *InstallSnapshotReply) {
@@ -887,10 +889,15 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		return
 	}
 
+	if rf.commitIndex < index || rf.logs[0].Index >= index {
+		return
+	}
+
 	rf.logs = rf.trimEntries(rf.logs[index-firstIndex:])
 	rf.persister.Save(rf.encodeRaftState(), snapshot)
-	Debug(dLog2, "S%d state is (term = %d, voteFor = %d, firstIndex = %d, lastIndex = %d) after snapshot.",
-		rf.me, rf.currentTerm, rf.voteFor, rf.getFirstLogEntry().Index, rf.getLastLogEntry().Index,
+	Debug(dLog2,
+		"S%d state is (term = %d, voteFor = %d, firstIndex = %d, lastIndex = %d, commitIndex = %d, lastApplied = %d) after snapshot(index=%d).",
+		rf.me, rf.currentTerm, rf.voteFor, rf.getFirstLogEntry().Index, rf.getLastLogEntry().Index, rf.commitIndex, rf.lastApplied, index,
 	)
 }
 
@@ -933,7 +940,6 @@ func (rf *Raft) ticker() {
 	}
 }
 
-// TODO: fix out of order apply
 func (rf *Raft) applier() {
 	for !rf.killed() {
 		rf.mu.Lock()
@@ -947,6 +953,7 @@ func (rf *Raft) applier() {
 		entries := make([]Entry, commitIndex-lastApplied)
 		firstIndex := rf.getFirstLogEntry().Index
 		copy(entries, rf.logs[lastApplied+1-firstIndex:commitIndex+1-firstIndex])
+		Debug(dCommit, "S%d Applying entries %v", rf.me, entries)
 		rf.mu.Unlock()
 
 		for _, entry := range entries {
@@ -955,10 +962,11 @@ func (rf *Raft) applier() {
 				Command:      entry.Command,
 				CommandIndex: entry.Index,
 			}
-
-			rf.mu.Lock()
-			rf.lastApplied = max(rf.lastApplied, commitIndex)
-			rf.mu.Unlock()
 		}
+
+		rf.mu.Lock()
+		rf.lastApplied = max(rf.lastApplied, commitIndex)
+		Debug(dCommit, "S%d lastApplied is now %d", rf.me, rf.lastApplied)
+		rf.mu.Unlock()
 	}
 }
