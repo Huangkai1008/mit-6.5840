@@ -8,8 +8,8 @@ const (
 
 type Err string
 
-// Put or Append
-type PutAppendArgs struct {
+// PutAppendRequest is the structure of `put` or `append` request.
+type PutAppendRequest struct {
 	Key   string
 	Value string
 	Op    string // "Put" or "Append"
@@ -22,7 +22,7 @@ type PutAppendReply struct {
 	Err Err
 }
 
-type GetArgs struct {
+type GetRequest struct {
 	Key string
 	// You'll have to add definitions here.
 }
