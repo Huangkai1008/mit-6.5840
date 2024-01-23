@@ -647,11 +647,11 @@ func (rf *Raft) broadcast(isHeartBeat bool) {
 					Debug(dLog, "S%d <- S%d, IS: %v", rf.me, peer, reply)
 				}
 
+				rf.mu.Lock()
 				if rf.currentTerm == request.Term && rf.isLeader() {
-					rf.mu.Lock()
 					rf.handleInstallSnapshotReply(peer, request, reply)
-					rf.mu.Unlock()
 				}
+				rf.mu.Unlock()
 
 			} else {
 				request := rf.newAppendEntriesRequest(prevLogIndex)
@@ -665,11 +665,11 @@ func (rf *Raft) broadcast(isHeartBeat bool) {
 				if rf.sendAppendEntries(peer, request, reply) {
 					Debug(dLog, "S%d <- S%d, AE: %v", rf.me, peer, reply)
 
+					rf.mu.Lock()
 					if rf.currentTerm == request.Term && rf.isLeader() {
-						rf.mu.Lock()
 						rf.handleAppendEntriesReply(peer, request, reply)
-						rf.mu.Unlock()
 					}
+					rf.mu.Unlock()
 				}
 			}
 		}(peer)
@@ -930,12 +930,12 @@ func (rf *Raft) ticker() {
 			}
 			rf.mu.Unlock()
 		case <-rf.electionTimer.C:
+			rf.mu.Lock()
 			if !rf.isLeader() {
 				Debug(dTimer, "S%d Not Leader, checking election timeout", rf.me)
-				rf.mu.Lock()
 				rf.startElection()
-				rf.mu.Unlock()
 			}
+			rf.mu.Unlock()
 		}
 	}
 }

@@ -40,7 +40,7 @@ func (kv *KVServer) Get(args *GetRequest, reply *GetReply) {
 	// Your code here.
 }
 
-func (kv *KVServer) PutAppend(args *PutAppendRequest, reply *PutAppendReply) {
+func (kv *KVServer) PutAppend(args *CommandRequest, reply *CommandReply) {
 	// Your code here.
 }
 
