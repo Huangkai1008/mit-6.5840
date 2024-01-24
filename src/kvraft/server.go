@@ -36,11 +36,11 @@ type KVServer struct {
 	// Your definitions here.
 }
 
-func (kv *KVServer) Get(args *GetRequest, reply *GetReply) {
+func (kv *KVServer) Get(request *CommandRequest, reply *CommandReply) {
 	// Your code here.
 }
 
-func (kv *KVServer) PutAppend(args *CommandRequest, reply *CommandReply) {
+func (kv *KVServer) PutAppend(request *CommandRequest, reply *CommandReply) {
 	// Your code here.
 }
 
@@ -75,14 +75,14 @@ func (kv *KVServer) killed() bool {
 // you don't need to snapshot.
 // StartKVServer() must return quickly, so it should start goroutines
 // for any long-running work.
-func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
+func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxRaftState int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
 
 	kv := new(KVServer)
 	kv.me = me
-	kv.maxRaftState = maxraftstate
+	kv.maxRaftState = maxRaftState
 
 	// You may need initialization code here.
 
