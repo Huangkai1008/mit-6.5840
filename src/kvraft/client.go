@@ -1,6 +1,8 @@
 package kvraft
 
-import "6.5840/labrpc"
+import (
+	"6.5840/labrpc"
+)
 import "crypto/rand"
 import "math/big"
 
@@ -21,9 +23,9 @@ func nRand() int64 {
 func getSvcMeth(op string) string {
 	var svcMeth string
 	switch op {
-	case Put, Append:
+	case PutOp, AppendOp:
 		svcMeth = "KVServer.PutAppend"
-	case Get:
+	case GetOp:
 		svcMeth = "KVServer.Get"
 	default:
 		panic("Invalid op")
@@ -58,12 +60,19 @@ func (ck *Clerk) Command(key string, value string, op string) string {
 	for {
 		reply := new(CommandReply)
 
+		Debug(dLog, "C%d -> S%d, %s: %v", ck.clientId, ck.leaderId, op, request)
+
 		// If the RPC call is failed or the leader is not the current leader,
 		// then try the next server.
-		if !ck.servers[ck.leaderId].Call(svcMeth, request, reply) || reply.Err == ErrWrongLeader {
+		if !ck.servers[ck.leaderId].Call(svcMeth, request, reply) ||
+			reply.Err == ErrWrongLeader ||
+			reply.Err == ErrTimeout {
+			Debug(dLog, "C%d <- S%d, %s: %v", ck.clientId, ck.leaderId, op, reply)
 			ck.leaderId = (ck.leaderId + 1) % int64(len(ck.servers))
 			continue
 		}
+
+		Debug(dLog, "C%d <- S%d, %s: %v", ck.clientId, ck.leaderId, op, reply)
 
 		// If the RPC call is successful, and the leader is the current leader, make sure
 		// the command is executed successfully.
@@ -83,7 +92,7 @@ func (ck *Clerk) Command(key string, value string, op string) string {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-	return ck.Command(key, "", Get)
+	return ck.Command(key, "", GetOp)
 }
 
 // PutAppend shared by Put and Append.

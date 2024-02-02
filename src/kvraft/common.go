@@ -1,20 +1,26 @@
 package kvraft
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 const (
 	OK             Err = "OK"
 	ErrNoKey           = "ErrNoKey"
 	ErrWrongLeader     = "ErrWrongLeader"
+	ErrTimeout         = "ErrTimeout"
 )
 
 type Err string
 
 const (
-	Put    = "Put"
-	Append = "Append"
-	Get    = "Get"
+	PutOp    = "Put"
+	AppendOp = "Append"
+	GetOp    = "Get"
 )
+
+const CommandTimeout = 500 * time.Millisecond
 
 // CommandRequest is the structure of command request.
 // If Op is "Put" or "Append", then Value is the value to put or append.

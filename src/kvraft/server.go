@@ -4,24 +4,16 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
-	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
-
-const Debug = false
-
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
-		log.Printf(format, a...)
-	}
-	return
-}
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	*CommandRequest
 }
 
 type KVServer struct {
@@ -34,14 +26,98 @@ type KVServer struct {
 	maxRaftState int // snapshot if log grows this big
 
 	// Your definitions here.
+	stateMachine  StateMachine
+	lastOperation map[int64]int64
+	notifyChanMap map[int]chan *CommandReply
+}
+
+func (kv *KVServer) Command(request *CommandRequest, reply *CommandReply) {
+	kv.mu.Lock()
+	if request.Op != GetOp && kv.isDuplicateRequest(request.ClientId, request.CommandId) {
+		reply.Err = OK
+		kv.mu.Unlock()
+		return
+	}
+	kv.mu.Unlock()
+
+	index, _, isLeader := kv.rf.Start(Op{request})
+	Debug(dLog, "S%d start agreement", kv.me)
+	if !isLeader {
+		Debug(dError, "S%d is not leader", kv.me)
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	kv.mu.Lock()
+	ch := kv.getNotifyCh(index)
+	kv.mu.Unlock()
+
+	select {
+	case result := <-ch:
+		reply.Value, reply.Err = result.Value, result.Err
+	case <-time.After(CommandTimeout):
+		reply.Err = ErrTimeout
+	}
+
+	go func() {
+		kv.mu.Lock()
+		kv.removeOutdatedNotifyCh(index)
+		kv.mu.Unlock()
+	}()
+
+}
+
+func (kv *KVServer) removeOutdatedNotifyCh(index int) {
+	delete(kv.notifyChanMap, index)
+}
+
+func (kv *KVServer) isDuplicateRequest(clientId int64, commandId int64) bool {
+	if lastCommandId, ok := kv.lastOperation[clientId]; ok && lastCommandId >= commandId {
+		return true
+	}
+
+	return false
+}
+
+func (kv *KVServer) apply(op Op) *CommandReply {
+	reply := new(CommandReply)
+
+	switch op.Op {
+	case GetOp:
+		reply.Value, reply.Err = kv.stateMachine.Get(op.Key)
+	case PutOp:
+		if !kv.isDuplicateRequest(op.ClientId, op.CommandId) {
+			kv.stateMachine.Put(op.Key, op.Value)
+			kv.lastOperation[op.ClientId] = op.CommandId
+		}
+		reply.Err = OK
+	case AppendOp:
+		if !kv.isDuplicateRequest(op.ClientId, op.CommandId) {
+			kv.stateMachine.Append(op.Key, op.Value)
+			kv.lastOperation[op.ClientId] = op.CommandId
+		}
+		reply.Err = OK
+	default:
+		panic("Unknown operation.")
+	}
+
+	return reply
+}
+
+func (kv *KVServer) getNotifyCh(index int) chan *CommandReply {
+	if _, ok := kv.notifyChanMap[index]; !ok {
+		kv.notifyChanMap[index] = make(chan *CommandReply, 1)
+	}
+
+	return kv.notifyChanMap[index]
 }
 
 func (kv *KVServer) Get(request *CommandRequest, reply *CommandReply) {
-	// Your code here.
+	kv.Command(request, reply)
 }
 
 func (kv *KVServer) PutAppend(request *CommandRequest, reply *CommandReply) {
-	// Your code here.
+	kv.Command(request, reply)
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -63,6 +139,25 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
+func (kv *KVServer) applier() {
+	for !kv.killed() {
+		select {
+		case msg := <-kv.applyCh:
+			kv.mu.Lock()
+			op := msg.Command.(Op)
+			reply := kv.apply(op)
+			if currentTerm, isLeader := kv.rf.GetState(); isLeader && msg.CommandTerm == currentTerm {
+				index := msg.CommandIndex
+				ch := kv.getNotifyCh(index)
+				ch <- reply
+			}
+			kv.mu.Unlock()
+		}
+	}
+}
+
+// StartKVServer start new KV Server, waiting for RPC calls from clerks.
+//
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
 // form the fault-tolerant key/value service.
@@ -80,15 +175,18 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
 
-	kv := new(KVServer)
-	kv.me = me
-	kv.maxRaftState = maxRaftState
+	applyCh := make(chan raft.ApplyMsg)
 
-	// You may need initialization code here.
+	kv := &KVServer{
+		me:            me,
+		rf:            raft.Make(servers, me, persister, applyCh),
+		applyCh:       applyCh,
+		maxRaftState:  maxRaftState,
+		stateMachine:  NewMemoryKV(),
+		lastOperation: make(map[int64]int64),
+		notifyChanMap: make(map[int]chan *CommandReply),
+	}
 
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	// You may need initialization code here.
-
+	go kv.applier()
 	return kv
 }
