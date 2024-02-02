@@ -602,7 +602,7 @@ func (rf *Raft) handleAppendEntriesReply(peer int, request *AppendEntriesRequest
 		rf.nextIndex[peer] = reply.ConflictIndex
 		firstIndex := rf.getFirstLogEntry().Index
 		if reply.ConflictTerm != -1 {
-			for index := request.PrevLogIndex; index >= 0; index-- {
+			for index := request.PrevLogIndex; index >= firstIndex; index-- {
 				if rf.logs[index-firstIndex].Term == reply.ConflictTerm {
 					rf.nextIndex[peer] = index + 1
 					break
@@ -725,7 +725,7 @@ func (rf *Raft) AppendEntries(request *AppendEntriesRequest, reply *AppendEntrie
 			firstIndex := rf.getFirstLogEntry().Index
 			reply.ConflictTerm = rf.logs[request.PrevLogIndex-firstIndex].Term
 			index := request.PrevLogIndex - 1
-			for index >= 0 && rf.logs[index-firstIndex].Term == reply.ConflictTerm {
+			for index >= firstIndex && rf.logs[index-firstIndex].Term == reply.ConflictTerm {
 				index--
 			}
 			reply.ConflictIndex = index

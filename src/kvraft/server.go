@@ -168,6 +168,11 @@ func (kv *KVServer) applier() {
 				kv.mu.Unlock()
 			} else if msg.SnapshotValid {
 				kv.mu.Lock()
+				if msg.SnapshotIndex <= kv.lastApplied {
+					kv.mu.Unlock()
+					continue
+				}
+
 				kv.restoreSnapshot(msg.Snapshot)
 				kv.lastApplied = msg.SnapshotIndex
 				kv.mu.Unlock()
