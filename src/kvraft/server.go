@@ -4,6 +4,8 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
+	"bytes"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +26,7 @@ type KVServer struct {
 	dead    int32 // set by Kill()
 
 	maxRaftState int // snapshot if log grows this big
+	lastApplied  int
 
 	// Your definitions here.
 	stateMachine  StateMachine
@@ -143,16 +146,70 @@ func (kv *KVServer) applier() {
 	for !kv.killed() {
 		select {
 		case msg := <-kv.applyCh:
-			kv.mu.Lock()
-			op := msg.Command.(Op)
-			reply := kv.apply(op)
-			if currentTerm, isLeader := kv.rf.GetState(); isLeader && msg.CommandTerm == currentTerm {
-				index := msg.CommandIndex
-				ch := kv.getNotifyCh(index)
-				ch <- reply
+			if msg.CommandValid {
+				kv.mu.Lock()
+				if msg.CommandIndex <= kv.lastApplied {
+					kv.mu.Unlock()
+					continue
+				}
+				kv.lastApplied = msg.CommandIndex
+
+				op := msg.Command.(Op)
+				reply := kv.apply(op)
+				if currentTerm, isLeader := kv.rf.GetState(); isLeader && msg.CommandTerm == currentTerm {
+					index := msg.CommandIndex
+					ch := kv.getNotifyCh(index)
+					ch <- reply
+				}
+				needSnapshot := kv.needSnapshot()
+				if needSnapshot {
+					kv.takeSnapshot(msg.CommandIndex)
+				}
+				kv.mu.Unlock()
+			} else if msg.SnapshotValid {
+				kv.mu.Lock()
+				kv.restoreSnapshot(msg.Snapshot)
+				kv.lastApplied = msg.SnapshotIndex
+				kv.mu.Unlock()
+			} else {
+				panic(fmt.Sprintf("Unexpected message: %v", msg))
 			}
-			kv.mu.Unlock()
 		}
+	}
+}
+
+func (kv *KVServer) needSnapshot() bool {
+	return kv.maxRaftState != -1 && kv.rf.GetRaftStateSize() >= kv.maxRaftState
+}
+
+func (kv *KVServer) encodeKVState() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(kv.stateMachine) != nil || e.Encode(kv.lastOperation) != nil {
+		Debug(dError, "S%d KV Persist state failed", kv.me)
+	}
+	return w.Bytes()
+}
+
+func (kv *KVServer) takeSnapshot(index int) {
+	kvState := kv.encodeKVState()
+	kv.rf.Snapshot(index, kvState)
+}
+
+func (kv *KVServer) restoreSnapshot(snapshot []byte) {
+	if snapshot == nil || len(snapshot) < 1 {
+		return
+	}
+
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	var stateMachine *MemoryKV
+	var lastOperation map[int64]int64
+	if d.Decode(&stateMachine) != nil || d.Decode(&lastOperation) != nil {
+		Debug(dError, "S%d KV Restores persisted state failed", kv.me)
+	} else {
+		kv.stateMachine = stateMachine
+		kv.lastOperation = lastOperation
 	}
 }
 
@@ -181,12 +238,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 		me:            me,
 		rf:            raft.Make(servers, me, persister, applyCh),
 		applyCh:       applyCh,
+		lastApplied:   0,
 		maxRaftState:  maxRaftState,
 		stateMachine:  NewMemoryKV(),
 		lastOperation: make(map[int64]int64),
 		notifyChanMap: make(map[int]chan *CommandReply),
 	}
-
+	kv.restoreSnapshot(persister.ReadSnapshot())
 	go kv.applier()
 	return kv
 }

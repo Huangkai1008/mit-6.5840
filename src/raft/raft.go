@@ -272,11 +272,15 @@ func (rf *Raft) updateTerm(term Term) {
 	rf.voteFor = -1
 }
 
+func (rf *Raft) GetRaftStateSize() int {
+	return rf.persister.RaftStateSize()
+}
+
 func (rf *Raft) encodeRaftState() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	if e.Encode(rf.currentTerm) != nil || e.Encode(rf.voteFor) != nil || e.Encode(rf.logs) != nil {
-		Debug(dError, "S% Persist state failed", rf.me)
+		Debug(dError, "S%d Persist state failed", rf.me)
 	}
 	return w.Bytes()
 }
