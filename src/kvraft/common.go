@@ -26,9 +26,8 @@ const CommandTimeout = 500 * time.Millisecond
 // If Op is "Put" or "Append", then Value is the value to put or append.
 // If Op is "Get", then the Value is empty.
 type CommandRequest struct {
-	Key   string
-	Value string
-	// See the comments of OpType.
+	Key       string
+	Value     string
 	Op        string
 	CommandId int64
 	ClientId  int64
