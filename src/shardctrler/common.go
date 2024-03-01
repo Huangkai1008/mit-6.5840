@@ -1,6 +1,9 @@
 package shardctrler
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 //
 // Shard controler: assigns shards to replication groups.
@@ -21,6 +24,7 @@ import "fmt"
 
 // The number of shards.
 const NShards = 10
+const CommandTimeout = 500 * time.Millisecond
 
 // A configuration -- an assignment of shards to groups.
 // Please don't change this.
@@ -46,23 +50,10 @@ const (
 )
 
 type CommandRequest struct {
-
-	// A set of mappings from unique, non-zero replica group identifiers (GIDs) to lists of server names,
-	// Used in JoinOp.
-	Servers map[int][]string
-
-	// A set of unique, non-zero replica group identifiers (GIDs).
-	// Used in LeaveOp.
-	GIDs []int
-
-	// A shard number and a replica group identifier (GID).
-	// Used in MoveOp.
-	Shard int
-	GID   int
-
-	// A desired configuration number.
-	// Used in QueryOp.
-	Num int
+	JoinRequest
+	LeaveRequest
+	MoveRequest
+	QueryRequest
 
 	Op        string
 	CommandId int64
@@ -106,22 +97,23 @@ func (c *CommandReply) String() string {
 	return fmt.Sprintf("Reply(Err = %s, Config = %v)", c.Err, c.Config)
 }
 
-type MoveArgs struct {
+type JoinRequest struct {
+	// A set of mappings from unique, non-zero replica group identifiers (GIDs) to lists of server names,
+	Servers map[int][]string
+}
+
+type LeaveRequest struct {
+	// A set of unique, non-zero replica group identifiers (GIDs).
+	GIDs []int
+}
+
+type MoveRequest struct {
+	// A shard number and a replica group identifier (GID).
 	Shard int
 	GID   int
 }
 
-type MoveReply struct {
-	WrongLeader bool
-	Err         Err
-}
-
-type QueryArgs struct {
+type QueryRequest struct {
+	// A desired configuration number.
 	Num int
-}
-
-type QueryReply struct {
-	WrongLeader bool
-	Err         Err
-	Config      Config
 }

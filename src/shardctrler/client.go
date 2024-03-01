@@ -72,30 +72,35 @@ func (ck *Clerk) Command(request *CommandRequest) *CommandReply {
 
 func (ck *Clerk) Join(servers map[int][]string) {
 	ck.Command(&CommandRequest{
-		Servers: servers,
-		Op:      JoinOp,
+		JoinRequest: JoinRequest{
+			Servers: servers,
+		},
+		Op: JoinOp,
 	})
+
 }
 
 func (ck *Clerk) Query(num int) Config {
 	reply := ck.Command(&CommandRequest{
-		Num: num,
-		Op:  QueryOp,
+		QueryRequest: QueryRequest{Num: num},
+		Op:           QueryOp,
 	})
 	return reply.Config
 }
 
 func (ck *Clerk) Leave(gids []int) {
 	ck.Command(&CommandRequest{
-		GIDs: gids,
-		Op:   LeaveOp,
+		LeaveRequest: LeaveRequest{GIDs: gids},
+		Op:           LeaveOp,
 	})
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
 	ck.Command(&CommandRequest{
-		Shard: shard,
-		GID:   gid,
-		Op:    MoveOp,
+		MoveRequest: MoveRequest{
+			Shard: shard,
+			GID:   gid,
+		},
+		Op: MoveOp,
 	})
 }
